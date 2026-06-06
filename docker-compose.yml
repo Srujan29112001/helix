@@ -1,0 +1,23 @@
+# One command to run the whole stack:  docker compose up --build
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    environment:
+      HELIX_CORS_ORIGINS: http://localhost:3000
+      # Add a free LLM key to enable real agent narration (else offline mock):
+      # HELIX_LLM_BASE_URL: https://api.groq.com/openai/v1
+      # HELIX_LLM_API_KEY: gsk_your_key
+      # HELIX_LLM_MODEL: llama-3.3-70b-versatile
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        # baked into the browser bundle — must be reachable from the user's browser
+        NEXT_PUBLIC_API_URL: http://localhost:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend

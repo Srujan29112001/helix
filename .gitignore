@@ -1,0 +1,23 @@
+# Node / Next.js
+node_modules/
+.next/
+out/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Secrets & local env (keep .env.example)
+.env
+.env.local
+.env.*.local
+
+# Local datasets & generated files
+data/
+backend/eval/results.json
+
+# Tooling / OS
+.claude/
+.DS_Store
