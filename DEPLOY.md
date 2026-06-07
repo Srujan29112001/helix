@@ -45,6 +45,7 @@ git push -u origin main
    | Secret | `HELIX_LLM_API_KEY` | your free Groq key (optional, for real LLM narration) |
    | Variable | `HELIX_LLM_BASE_URL` | `https://api.groq.com/openai/v1` (only if you set a key) |
    | Variable | `HELIX_LLM_MODEL` | `llama-3.3-70b-versatile` (only if you set a key) |
+   | Secret | `E2B_API_KEY` | *optional* — run agent code in an **E2B microVM** (hardened isolation) instead of RestrictedPython · key from [e2b.dev](https://e2b.dev) |
    Then **Restart** the Space.
 
 ---

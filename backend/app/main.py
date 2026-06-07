@@ -60,6 +60,21 @@ def _sse(obj: dict) -> str:
     return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n"
 
 
+def _llm_config(llms, provider, model, api_key) -> dict | None:
+    """Build the per-role LLM config from an explicit ``llms`` map (dict or JSON
+    string) or fall back to the legacy single provider/model/apiKey fields."""
+    if isinstance(llms, str) and llms.strip():
+        try:
+            llms = json.loads(llms)
+        except Exception:  # noqa: BLE001
+            llms = None
+    if isinstance(llms, dict) and llms:
+        return llms
+    if api_key:
+        return {"default": {"provider": provider or "groq", "model": model, "api_key": api_key}}
+    return None
+
+
 async def _fallback(req: RunRequest, queue: "asyncio.Queue", reason: str) -> None:
     """Scripted mock so a pipeline failure never breaks the demo."""
     ds = dict(get_dataset(req.datasetId))
@@ -88,7 +103,7 @@ async def _stream(req: RunRequest):
         await queue.put({"t": "event", "stage": stage, "status": status, "log": log})
 
     async def driver() -> None:
-        set_llm_override(req.provider, req.model, req.apiKey)
+        set_llm_override(_llm_config(req.llms, req.provider, req.model, req.apiKey))
         try:
             results = await run_pipeline(req.datasetId, req.goal, req.fileName, emit)
             await queue.put({"t": "result", "results": results})
@@ -129,6 +144,9 @@ async def _analyze_stream(
     provider: str,
     model: str,
     api_key: str,
+    e2b_key: str,
+    context: str,
+    llms: str,
 ):
     queue: asyncio.Queue = asyncio.Queue()
 
@@ -136,9 +154,9 @@ async def _analyze_stream(
         await queue.put({"t": "event", "stage": stage, "status": status, "log": log})
 
     async def driver() -> None:
-        set_llm_override(provider, model, api_key)
+        set_llm_override(_llm_config(llms, provider, model, api_key))
         try:
-            results = await run_real(df, target, goal, task, emit)
+            results = await run_real(df, target, goal, task, emit, e2b_key=e2b_key, context=context)
             await queue.put({"t": "result", "results": results})
         except Exception as exc:  # noqa: BLE001
             await queue.put(
@@ -168,12 +186,15 @@ async def analyze(
     provider: str = Form("groq"),
     model: str = Form(""),
     apiKey: str = Form(""),
+    e2bKey: str = Form(""),
+    context: str = Form(""),
+    llms: str = Form(""),
 ) -> StreamingResponse:
     raw = await file.read()
     df = pd.read_csv(io.BytesIO(raw))
     return StreamingResponse(
         _analyze_stream(
-            df, target, goal, task, file.filename or "uploaded.csv", provider, model, apiKey
+            df, target, goal, task, file.filename or "uploaded.csv", provider, model, apiKey, e2bKey, context, llms
         ),
         media_type="text/event-stream",
         headers=_SSE_HEADERS,

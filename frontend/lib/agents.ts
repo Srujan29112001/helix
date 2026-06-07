@@ -5,6 +5,7 @@ import {
   Wrench,
   Sparkles,
   ScanSearch,
+  Globe,
   FileText,
   type LucideIcon,
 } from "lucide-react";
@@ -16,6 +17,7 @@ export type AgentId =
   | "critic"
   | "automl"
   | "explainer"
+  | "researcher"
   | "reporter";
 
 export interface Agent {
@@ -65,10 +67,10 @@ export const AGENTS: Agent[] = [
     index: 2,
     name: "Executor",
     role: "Runs it safely",
-    tech: "RestrictedPython sandbox",
+    tech: "E2B microVM · RestrictedPython",
     blurb: "Executes generated code in an isolated, locked-down sandbox.",
     detail:
-      "Runs each cell with file-system and network access blocked, capturing stdout, artifacts and full tracebacks for the Critic.",
+      "Runs each cell in a hardened sandbox — an E2B microVM when configured, otherwise an in-process RestrictedPython jail with file-system and network access blocked — capturing stdout and full tracebacks for the Critic.",
     icon: Terminal,
     accent: "#38bdf8",
   },
@@ -109,8 +111,20 @@ export const AGENTS: Agent[] = [
     accent: "#e879f9",
   },
   {
-    id: "reporter",
+    id: "researcher",
     index: 6,
+    name: "Researcher",
+    role: "Researches the web",
+    tech: "Live web search",
+    blurb: "Pulls real-world domain context from the live web.",
+    detail:
+      "Searches the live web for benchmarks, industry knowledge and best practices tied to the goal, dataset context and the model's drivers — grounding the report in the real world.",
+    icon: Globe,
+    accent: "#34d399",
+  },
+  {
+    id: "reporter",
+    index: 7,
     name: "Reporter",
     role: "Writes the story",
     tech: "Mistral-7B",

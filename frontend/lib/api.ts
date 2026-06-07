@@ -10,6 +10,8 @@ export interface LLMConfig {
   provider?: string;
   model?: string;
   apiKey?: string;
+  /** optional per-role config: { default: {...}, coder: {provider, model, api_key}, ... } */
+  llms?: Record<string, { provider?: string; model?: string; api_key?: string }>;
 }
 
 export interface RunRequest extends LLMConfig {
@@ -22,6 +24,8 @@ export interface AnalyzeRequest extends LLMConfig {
   goal: string;
   target: string;
   task?: string;
+  e2bKey?: string;
+  context?: string;
 }
 
 interface ServerEvent {
@@ -103,6 +107,9 @@ export async function streamAnalyze(
   form.append("provider", req.provider ?? "groq");
   form.append("model", req.model ?? "");
   form.append("apiKey", req.apiKey ?? "");
+  form.append("e2bKey", req.e2bKey ?? "");
+  form.append("context", req.context ?? "");
+  form.append("llms", req.llms ? JSON.stringify(req.llms) : "");
   const res = await fetch(`${API_URL}/api/analyze`, {
     method: "POST",
     body: form,

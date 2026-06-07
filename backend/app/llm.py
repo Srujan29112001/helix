@@ -42,14 +42,55 @@ class MockLLM(LLMProvider):
             report = context.get("report", [])
             rec = context.get("recommendation", "")
             return "\n\n".join(report) + (f"\n\nRecommendation: {rec}" if rec else "")
+        if role == "researcher":
+            hits = context.get("hits", [])
+            goal = context.get("goal", "this analysis")
+            if hits:
+                return f"External research surfaced {len(hits)} relevant sources on {goal}. " + hits[0].get("snippet", "")[:170]
+            return (
+                f"No live web results were available, so this draws on general domain knowledge: {goal} "
+                "typically hinges on the drivers the model surfaced above."
+            )
         return ""
 
 
 _SYSTEM = {
     "planner": "You are a senior data scientist. Given a dataset description and a goal, output a concise numbered analysis plan (max 6 steps). One step per line, no prose.",
-    "coder": "You are an expert Python data scientist. Output only runnable Python for the requested step — no explanations, no markdown fences.",
-    "critic": "You are a Python debugging expert. Given code and its traceback, output the corrected FULL Python script that fixes the error. Output only the code — no markdown fences, no prose.",
-    "reporter": "You are a business analyst. Write a short, plain-English narrative of the findings for a non-technical stakeholder, then a one-line recommendation.",
+    "coder": (
+        "You are an expert Python data scientist writing for a RESTRICTED sandbox. "
+        "A pandas DataFrame named `df` is ALREADY loaded in memory — never read files, never call "
+        "read_csv/read_excel/open. Allowed imports: pandas, numpy, sklearn, math, statistics, re, json. "
+        "NEVER import matplotlib, seaborn, plotly, os, sys, or any plotting/network library, and do not "
+        "create plots. For numeric aggregations (mean/sum/std/var/corr) ALWAYS pass numeric_only=True to "
+        "avoid string-dtype errors, but NEVER pass numeric_only to describe() — use df.describe(include='all'). "
+        "Only compute and print() short text summaries. "
+        "Output only runnable Python — no explanations, no markdown fences."
+    ),
+    "critic": (
+        "You are a Python debugging expert. Given code and its traceback, output the corrected FULL Python "
+        "script that fixes the error. The DataFrame `df` is already loaded — never read files and never import "
+        "matplotlib/plotting libraries. If the error is a reduction on string dtype (e.g. \"Cannot perform "
+        "reduction 'mean' with string dtype\"), add numeric_only=True to that aggregation — but NEVER to "
+        "describe() (use df.describe(include='all')). Output only the code — no markdown fences, no prose."
+    ),
+    "reporter": (
+        "You are a senior data/business analyst writing a professional, board-ready findings report. "
+        "Write 6-7 substantial paragraphs in plain English for executives, weaving in the SPECIFIC numbers you "
+        "are given — cite metric values, driver directions, segment rates, correlations and key statistics: "
+        "(1) an executive summary of what was predicted and how reliable it is; (2) the strongest drivers and the "
+        "business meaning of each direction; (3) what the segment/breakdown pattern reveals, with the actual rates; "
+        "(4) notable correlations and what they imply; (5) data quality and the automated observations provided; "
+        "(6) the risks, caveats and limits of the model. Then a final paragraph starting with 'Recommendation:' "
+        "giving 2-3 concrete, prioritised actions. Be specific and quantitative, never generic. No markdown, no "
+        "bullet points, no headings."
+    ),
+    "researcher": (
+        "You are a research analyst with live web access. Given the analysis goal, the dataset's domain context, "
+        "the model's key drivers, and real web search results, write 3-4 sentences of external, domain-aware "
+        "context that complements the analysis: what the field/industry already knows about these drivers, "
+        "relevant benchmarks, regulations or best practices. Ground claims in the provided search snippets; if no "
+        "results are available, use general domain knowledge and say it is not live. Be specific — no fluff, no markdown."
+    ),
 }
 
 
@@ -129,7 +170,12 @@ def _build_user_prompt(role: str, context: dict[str, Any]) -> str:
     if role == "coder":
         docs = context.get("docs", [])
         ref = ("\nRelevant docs:\n" + "\n".join(f"- {d}" for d in docs)) if docs else ""
-        return head + f"Step: {context.get('step','')}{ref}\nWrite the Python."
+        return head + (
+            f"Step: {context.get('step','')}{ref}\n"
+            "The DataFrame `df` is already loaded — do NOT read any file and do NOT import "
+            "matplotlib/seaborn or plot. Use only pandas/numpy and print() concise text summaries.\n"
+            "Write the Python."
+        )
     if role == "critic":
         return (
             f"This Python failed:\n{context.get('code', '')}\n\n"
@@ -138,8 +184,27 @@ def _build_user_prompt(role: str, context: dict[str, Any]) -> str:
         )
     if role == "reporter":
         return head + (
-            f"Metrics: {context.get('metrics','')}\n"
-            f"Key drivers: {context.get('drivers','')}\nWrite the report + recommendation."
+            f"Metrics (held-out test set): {context.get('metrics','')}\n"
+            f"Key drivers (most to least important; sign = effect direction): {context.get('drivers','')}\n"
+            f"Breakdown — {context.get('breakdown','')}\n"
+            f"Key statistics: {context.get('stats','')}\n"
+            f"Notable correlations: {context.get('correlations','')}\n"
+            f"Data quality: {context.get('quality','')}\n"
+            f"Automated observations: {context.get('smart','')}\n"
+            f"External web research: {context.get('research','')}\n"
+            "Write the 6-7 paragraph professional report citing these specific numbers (weave in the external "
+            "research where relevant, and include a data-quality paragraph), then the final 'Recommendation:' "
+            "paragraph with 2-3 prioritised actions."
+        )
+    if role == "researcher":
+        hits = context.get("hits", [])
+        src = "\n".join(f"- {h.get('title','')}: {h.get('snippet','')}" for h in hits[:5]) or "(no live results — use domain knowledge)"
+        return head + (
+            f"Goal: {context.get('goal','')}\n"
+            f"Dataset context: {context.get('context','') or '(none given)'}\n"
+            f"Model's key drivers: {context.get('drivers','')}\n"
+            f"Web search results:\n{src}\n"
+            "Write the 3-4 sentence external research synthesis."
         )
     return head
 
@@ -152,6 +217,7 @@ PROVIDERS: dict[str, tuple[str, str]] = {
     "mistral": ("https://api.mistral.ai/v1", "openai"),
     "openrouter": ("https://openrouter.ai/api/v1", "openai"),
     "gemini": ("https://generativelanguage.googleapis.com/v1beta/openai", "openai"),
+    "zai": ("https://api.z.ai/api/paas/v4", "openai"),
     "anthropic": ("https://api.anthropic.com/v1", "anthropic"),
 }
 
@@ -162,6 +228,7 @@ _DEFAULT_MODEL = {
     "mistral": "mistral-small-latest",
     "openrouter": "deepseek/deepseek-chat",
     "gemini": "gemini-2.0-flash",
+    "zai": "glm-4.6",
     "anthropic": "claude-3-5-haiku-latest",
 }
 
@@ -181,10 +248,16 @@ def make_llm(provider: str, model: str | None, api_key: str | None) -> LLMProvid
 _override: ContextVar[dict | None] = ContextVar("helix_llm_override", default=None)
 
 
-def set_llm_override(provider: str | None, model: str | None, api_key: str | None) -> None:
-    _override.set(
-        {"provider": provider or "groq", "model": model, "api_key": api_key} if api_key else None
-    )
+def set_llm_override(config: dict | None) -> None:
+    """Per-request LLM config from the UI.
+
+    ``config`` maps a role (or the special key ``"default"``) to a
+    ``{provider, model, api_key}`` dict. A role without its own entry falls back
+    to ``"default"``. This supports BOTH one shared model for every agent
+    (``{"default": {...}}``) and a different model per agent
+    (``{"default": {...}, "coder": {...}, "reporter": {...}}``). ``None`` clears it.
+    """
+    _override.set(config or None)
 
 
 def _resolve(role: str) -> tuple[str, str, str]:
@@ -197,9 +270,10 @@ def _resolve(role: str) -> tuple[str, str, str]:
 
 
 def get_llm(role: str) -> LLMProvider:
-    cfg = _override.get()
-    if cfg and cfg.get("api_key"):
-        return make_llm(cfg["provider"], cfg.get("model"), cfg["api_key"])
+    cfg = _override.get() or {}
+    rc = cfg.get(role) or cfg.get("default")
+    if rc and rc.get("api_key"):
+        return make_llm(rc.get("provider") or "groq", rc.get("model"), rc["api_key"])
     base_url, api_key, model = _resolve(role)
     if base_url or api_key:
         return OpenAICompatibleLLM(

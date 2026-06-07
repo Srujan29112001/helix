@@ -31,6 +31,22 @@ export interface DistItem {
   display: string;
 }
 
+export interface GraphNode {
+  id: string;
+  name: string;
+  group: string; // "target" | "driver" | "segment"
+  val: number;
+  sign?: number;
+}
+
+export interface GraphLink {
+  source: string;
+  target: string;
+  value: number;
+  kind: string; // "drives" | "corr" | "segment"
+  sign?: number;
+}
+
 export interface RunResults {
   taskLabel: string;
   bestModel: string;
@@ -48,6 +64,28 @@ export interface RunResults {
   _target?: string;
   _rows?: number;
   _cols?: number;
+  _train_rows?: number;
+  _test_rows?: number;
+  _metric?: string;
+  _corr?: { a: string; b: string; r: number }[];
+  _hist?: { feature: string; bins: { label: string; count: number }[] } | null;
+  _graph?: { nodes: GraphNode[]; links: GraphLink[] } | null;
+  _stats?: { label: string; value: string }[];
+  _scatter?: { x: string; y: string; points: { x: number; y: number; c: number }[] } | null;
+  _profile?: { name: string; type: string; missing: number; unique: number }[];
+  _quality?: { score: number; missing: number; duplicates: number; constant_cols: number } | null;
+  _box?: {
+    feature: string;
+    boxes: { label: string; min: number; q1: number; med: number; q3: number; max: number }[];
+  } | null;
+  _insights_text?: { text: string; kind: string }[];
+  _research?: {
+    queries: string[];
+    hits: { title: string; snippet: string; url: string }[];
+    synthesis: string;
+  } | null;
+  _report_base?: string[];
+  _recommendation_base?: string;
 }
 
 export interface Dataset {
@@ -89,6 +127,7 @@ export const DATASETS: Dataset[] = [
         { label: "ROC-AUC", value: "0.86" },
         { label: "Precision", value: "0.79" },
         { label: "Recall", value: "0.66" },
+        { label: "F1", value: "0.72" },
       ],
       barsTitle: "SHAP feature importance",
       bars: [
@@ -335,8 +374,11 @@ export function buildEvents(ds: Dataset): RunEvent[] {
       text: "flaml.AutoML(budget=60s)  searching…",
       kind: "muted",
     });
-    const ms = r.metrics[1] ?? r.metrics[0];
-    push(400, "automl", { text: `  ${r.bestModel}  ${ms.label} ${ms.value}  ★ best`, kind: "ok" });
+    push(400, "automl", { text: `  best model → ${r.bestModel}  ★`, kind: "ok" });
+    push(300, "automl", { text: "test-set metrics:", kind: "muted" });
+    r.metrics.forEach((m) =>
+      push(220, "automl", { text: `  ${m.label.padEnd(12)} ${m.value}`, kind: "code" }),
+    );
   }
   push(450, "automl", { text: `selected → ${r.bestModel}`, kind: "info" }, "done");
 
@@ -358,6 +400,16 @@ export function buildEvents(ds: Dataset): RunEvent[] {
     });
   });
   push(400, "explainer", { text: "explanations ready", kind: "ok" }, "done");
+
+  // Researcher
+  push(350, "researcher", undefined, "active");
+  push(500, "researcher", {
+    text: `searching the web: ${ds.goal}`.slice(0, 62),
+    kind: "muted",
+  });
+  push(420, "researcher", { text: "  - industry benchmarks & best practices", kind: "code" });
+  push(380, "researcher", { text: "  - related studies & domain context", kind: "code" });
+  push(450, "researcher", { text: "synthesised external context", kind: "ok" }, "done");
 
   // Reporter
   push(350, "reporter", undefined, "active");

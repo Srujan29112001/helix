@@ -65,6 +65,15 @@ const SNIPPETS: Record<AgentId, { label: string; lines: string[] }> = {
       "feature_4          −0.41",
     ],
   },
+  researcher: {
+    label: "research › web",
+    lines: [
+      "searching the live web…",
+      "- industry benchmarks",
+      "- best practices & studies",
+      "✓ synthesised domain context",
+    ],
+  },
   reporter: {
     label: "report.md",
     lines: [

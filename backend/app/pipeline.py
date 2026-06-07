@@ -34,6 +34,7 @@ class RunState(TypedDict, total=False):
     error: Optional[str]
     retries: int
     results: Optional[dict[str, Any]]
+    research: Optional[dict[str, Any]]
     emit: Emit
 
 
@@ -165,26 +166,70 @@ async def explainer(state: RunState) -> dict[str, Any]:
     return {}
 
 
+async def researcher(state: RunState) -> dict[str, Any]:
+    from .web_search import web_research
+
+    ds, emit = state["dataset"], state["emit"]
+    r = ds["results"]
+    goal = state.get("goal", ds.get("goal", ""))
+    drivers = [b["label"] for b in r["bars"][:3]]
+    await emit("researcher", status="active")
+    queries = [q for q in [
+        goal,
+        f"{ds['target']} key factors {drivers[0]}" if drivers else "",
+        f"{ds['target']} analysis benchmarks",
+    ] if q]
+    await emit("researcher", log={"text": "searching the web: " + (queries[0] or "")[:60], "kind": "muted"})
+    hits = await asyncio.get_event_loop().run_in_executor(None, lambda: web_research(queries, 5))
+    if hits:
+        for h in hits[:4]:
+            await emit("researcher", log={"text": "  - " + (h["title"] or h["url"])[:66], "kind": "code"})
+    else:
+        await emit("researcher", log={"text": "no live results — using domain knowledge", "kind": "warn"})
+    synth = await get_llm("researcher").acomplete(
+        "researcher",
+        {"goal": goal, "context": "", "drivers": ", ".join(drivers), "hits": hits, "dataset": ds},
+    )
+    await emit("researcher", log={"text": "synthesised external context", "kind": "ok"})
+    await emit("researcher", status="done")
+    return {"research": {"queries": queries, "hits": hits[:6], "synthesis": synth}}
+
+
 async def reporter(state: RunState) -> dict[str, Any]:
     ds, emit = state["dataset"], state["emit"]
     base = ds["results"]
+    research = state.get("research") or {}
     await emit("reporter", status="active")
     await emit("reporter", log={"text": "drafting business narrative…", "kind": "muted"})
     await _pace(0.5)
     llm = get_llm("reporter")
     drivers = ", ".join(b["label"] for b in base["bars"][:3])
     metrics = ", ".join(f"{m['label']} {m['value']}" for m in base["metrics"])
+    common = {"dataset": ds, "drivers": drivers, "metrics": metrics}
+    results = dict(base)
+    if research:
+        results["_research"] = research
+    results["_report_base"] = list(base["report"])
+    results["_recommendation_base"] = base["recommendation"]
     text = await llm.acomplete(
         "reporter",
-        {"report": base["report"], "recommendation": base["recommendation"], "dataset": ds, "drivers": drivers, "metrics": metrics},
+        {"report": base["report"], "recommendation": base["recommendation"], **common,
+         "research": research.get("synthesis", "")},
     )
-    results = dict(base)
     # When a real model is used, prefer its narrative; mock keeps the curated text.
     if not llm.is_mock and text:
         paras = [p.strip() for p in text.split("\n\n") if p.strip()]
         if paras:
             results["report"] = paras[:-1] or paras
             results["recommendation"] = paras[-1].replace("Recommendation:", "").strip()
+        btext = await llm.acomplete(
+            "reporter",
+            {"report": base["report"], "recommendation": base["recommendation"], **common, "research": ""},
+        )
+        bparas = [p.strip() for p in (btext or "").split("\n\n") if p.strip()]
+        if bparas:
+            results["_report_base"] = bparas[:-1] or bparas
+            results["_recommendation_base"] = bparas[-1].replace("Recommendation:", "").strip()
     await emit("reporter", log={"text": "✓ report generated", "kind": "ok"})
     await emit("reporter", status="done")
     return {"results": results}
@@ -199,6 +244,7 @@ def build_graph():
         ("critic", critic),
         ("automl", automl),
         ("explainer", explainer),
+        ("researcher", researcher),
         ("reporter", reporter),
     ]:
         g.add_node(name, fn)
@@ -208,7 +254,8 @@ def build_graph():
     g.add_conditional_edges("executor", route_after_executor, {"critic": "critic", "automl": "automl"})
     g.add_edge("critic", "executor")
     g.add_edge("automl", "explainer")
-    g.add_edge("explainer", "reporter")
+    g.add_edge("explainer", "researcher")
+    g.add_edge("researcher", "reporter")
     g.add_edge("reporter", END)
     return g.compile()
 

@@ -10,6 +10,7 @@ self-heal beat is genuinely real, not scripted.
 from __future__ import annotations
 
 import asyncio
+import os
 from typing import Any, Awaitable, Callable
 
 import pandas as pd
@@ -17,7 +18,8 @@ import pandas as pd
 from .analysis import analyze_dataframe, clean
 from .llm import get_llm
 from .rag import retrieve
-from .sandbox import run_in_sandbox, strip_code_fences
+from .sandbox import execute_code, strip_code_fences
+from .web_search import web_research
 
 Emit = Callable[..., Awaitable[None]]
 
@@ -29,6 +31,8 @@ async def run_real(
     task: str,
     emit: Emit,
     time_budget: int = 20,
+    e2b_key: str = "",
+    context: str = "",
 ) -> dict[str, Any]:
     rows, cols = df.shape
     ds_info = {
@@ -91,18 +95,24 @@ async def run_real(
 
     # ── Executor + Critic: run in the sandbox, self-correct real failures ─
     await emit("executor", status="active")
-    await emit("executor", log={"text": "> RestrictedPython sandbox  (fs: off | net: off)", "kind": "muted"})
+    sandbox_label = (
+        "E2B microVM  (isolated VM | hard timeout)"
+        if (e2b_key or os.getenv("E2B_API_KEY"))
+        else "RestrictedPython sandbox  (fs: off | net: off)"
+    )
+    await emit("executor", log={"text": "> " + sandbox_label, "kind": "muted"})
     await _p(0.3)
     await emit("executor", log={"text": f"loaded {rows:,} rows x {cols} cols", "kind": "info"})
 
     current = gen
     ran_ok = False
+    fixes = 0
     for attempt in range(5):
-        res = await loop.run_in_executor(None, lambda c=current: run_in_sandbox(c, {"df": df.copy()}))
+        res = await loop.run_in_executor(None, lambda c=current: execute_code(c, df, e2b_key))
         if res.ok:
             for line in (res.stdout or "").strip().splitlines()[:8]:
                 await emit("executor", log={"text": "  " + line, "kind": "code"})
-            await emit("executor", log={"text": "OK generated code executed", "kind": "ok"})
+            await emit("executor", log={"text": f"OK code executed in {res.engine}", "kind": "ok"})
             ran_ok = True
             break
         await emit("executor", log={"text": "Traceback: " + res.error, "kind": "err"})
@@ -114,6 +124,7 @@ async def run_real(
             "critic", {"error": res.error, "code": current, "fix": curated_fix, "dataset": ds_info}
         )
         fixed = strip_code_fences(fixed.strip()) or curated_fix
+        fixes += 1
         await emit("critic", log={"text": f"patched the code, retry {attempt + 1}/5", "kind": "warn"})
         await emit("critic", status="done")
         current = fixed
@@ -121,6 +132,12 @@ async def run_real(
         await emit("executor", log={"text": "> re-running patched code...", "kind": "muted"})
     if not ran_ok:
         await emit("executor", log={"text": "could not auto-fix in 5 tries; using the trusted engine", "kind": "warn"})
+    # the Critic only runs on a failure — if the code passed first try, say so
+    # explicitly so the agent never looks stuck at "queued".
+    if fixes == 0:
+        await emit("critic", status="active")
+        await emit("critic", log={"text": "code passed on the first try — no self-correction needed", "kind": "muted"})
+        await emit("critic", status="done")
 
     # surface the real data-cleaning the engine applies
     try:
@@ -132,16 +149,25 @@ async def run_real(
 
     await emit("executor", log={"text": "training models (FLAML AutoML, ~20s)...", "kind": "muted"})
     results = await loop.run_in_executor(None, lambda: analyze_dataframe(df, target, task, time_budget))
+    tr, te = results.get("_train_rows"), results.get("_test_rows")
+    if tr and te:
+        await emit("executor", log={"text": f"train/test split: {tr:,} train / {te:,} test (80/20)", "kind": "info"})
     await emit("executor", log={"text": f"OK trained on {results['_rows']:,} rows", "kind": "ok"})
     await emit("executor", status="done")
 
     # ── AutoML ───────────────────────────────────────────────────────────
     await emit("automl", status="active")
-    await emit("automl", log={"text": "model search complete", "kind": "muted"})
+    opt = results.get("_metric")
+    await emit("automl", log={"text": f"FLAML model search complete (optimized {opt})" if opt else "model search complete", "kind": "muted"})
     await _p(0.3)
     hv = results["headline"]
-    await emit("automl", log={"text": f"  best: {results['bestModel']}  {hv['label']} {hv['value']}  * best", "kind": "ok"})
+    await emit("automl", log={"text": f"  best model: {results['bestModel']}  ({hv['label']} {hv['value']})  * best", "kind": "ok"})
     await emit("automl", log={"text": f"task detected -> {results['taskLabel']}", "kind": "info"})
+    # transparent: stream every evaluation metric on the held-out test set
+    await emit("automl", log={"text": "test-set metrics:", "kind": "muted"})
+    for m in results.get("metrics", []):
+        await _p(0.16)
+        await emit("automl", log={"text": "  " + str(m["label"]).ljust(12) + " " + str(m["value"]), "kind": "code"})
     await emit("automl", status="done")
 
     # ── Explainer ────────────────────────────────────────────────────────
@@ -155,22 +181,82 @@ async def run_real(
     await emit("explainer", log={"text": "explanations ready", "kind": "ok"})
     await emit("explainer", status="done")
 
+    # ── Researcher: live web research for domain context ─────────────────
+    await emit("researcher", status="active")
+    drivers_list = [str(d["feature"]) for d in results["_drivers"]]
+    ctx_prefix = (context + " ") if context else ""
+    queries = [q for q in [
+        f"{ctx_prefix}{goal}".strip(),
+        f"{ctx_prefix}{target} key factors {drivers_list[0]}".strip() if drivers_list else "",
+        f"{ctx_prefix}{target} analysis benchmarks".strip(),
+    ] if q]
+    await emit("researcher", log={"text": "searching the web: " + queries[0][:60], "kind": "muted"})
+    hits = await loop.run_in_executor(None, lambda: web_research(queries, 5))
+    if hits:
+        for h in hits[:4]:
+            await emit("researcher", log={"text": "  - " + (h["title"] or h["url"])[:66], "kind": "code"})
+    else:
+        await emit("researcher", log={"text": "no live results — using domain knowledge", "kind": "warn"})
+    research_text = await get_llm("researcher").acomplete(
+        "researcher",
+        {"goal": goal, "context": context, "drivers": ", ".join(drivers_list), "hits": hits, "dataset": ds_info},
+    )
+    await emit("researcher", log={"text": "synthesised external context", "kind": "ok"})
+    await emit("researcher", status="done")
+    results["_research"] = {"queries": queries, "hits": hits[:6], "synthesis": research_text}
+
     # ── Reporter ─────────────────────────────────────────────────────────
     await emit("reporter", status="active")
     await emit("reporter", log={"text": "drafting business narrative...", "kind": "muted"})
     await _p(0.4)
     llm = get_llm("reporter")
-    drivers = ", ".join(str(d["feature"]) for d in results["_drivers"])
+    drivers = ", ".join(
+        f"{d['feature']} ({'increases' if d.get('direction', 0) >= 0 else 'decreases'} it)"
+        for d in results["_drivers"]
+    )
     metrics = ", ".join(m["label"] + " " + m["value"] for m in results["metrics"])
+    breakdown = results.get("distTitle", "") + " — " + ", ".join(
+        f"{d['label']}: {d.get('display', round(d['value'], 2))}" for d in results.get("dist", [])[:5]
+    )
+    stats = "; ".join(f"{s['label']} {s['value']}" for s in results.get("_stats", []))
+    corr = "; ".join(f"{c['a']}~{c['b']} r={c['r']}" for c in results.get("_corr", []))
+    q = results.get("_quality") or {}
+    quality = (
+        f"score {q.get('score', '?')}/100, {q.get('missing', '?')}% missing, "
+        f"{q.get('duplicates', 0)} duplicate rows" if q else ""
+    )
+    smart = " | ".join(s["text"] for s in results.get("_insights_text", [])[:6])
+    common = {
+        "dataset": ds_info, "drivers": drivers, "metrics": metrics, "breakdown": breakdown,
+        "stats": stats, "correlations": corr, "quality": quality, "smart": smart,
+    }
+    orig_report = list(results["report"])
+    orig_rec = results["recommendation"]
+    # baseline (no web research) defaults to the curated text
+    results["_report_base"] = orig_report
+    results["_recommendation_base"] = orig_rec
+
+    def _parse(txt: str):
+        paras = [p.strip() for p in (txt or "").split("\n\n") if p.strip()]
+        if not paras:
+            return None, None
+        return (paras[:-1] or paras), paras[-1].replace("Recommendation:", "").strip()
+
+    # WITH live web research
     rtext = await llm.acomplete(
-        "reporter",
-        {"report": results["report"], "recommendation": results["recommendation"], "dataset": ds_info, "drivers": drivers, "metrics": metrics},
+        "reporter", {"report": orig_report, "recommendation": orig_rec, **common, "research": research_text}
     )
     if not llm.is_mock and rtext:
-        paras = [p.strip() for p in rtext.split("\n\n") if p.strip()]
-        if paras:
-            results["report"] = paras[:-1] or paras
-            results["recommendation"] = paras[-1].replace("Recommendation:", "").strip()
+        rep, rec = _parse(rtext)
+        if rep:
+            results["report"], results["recommendation"] = rep, rec
+        # WITHOUT web research — the baseline, for the comparison toggle
+        btext = await llm.acomplete(
+            "reporter", {"report": orig_report, "recommendation": orig_rec, **common, "research": ""}
+        )
+        brep, brec = _parse(btext)
+        if brep:
+            results["_report_base"], results["_recommendation_base"] = brep, brec
     await emit("reporter", log={"text": "OK report generated", "kind": "ok"})
     await emit("reporter", status="done")
 

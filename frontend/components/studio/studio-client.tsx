@@ -12,6 +12,7 @@ import Link from "next/link";
 import { AnimatePresence, motion } from "motion/react";
 import {
   ArrowRight,
+  ArrowDown,
   RotateCcw,
   Upload,
   FileSpreadsheet,
@@ -21,8 +22,11 @@ import {
   Download,
   CornerDownLeft,
   Sparkles,
+  Eye,
+  EyeOff,
+  Globe,
 } from "lucide-react";
-import { AGENTS, type AgentId } from "@/lib/agents";
+import { AGENTS, type AgentId, type Agent } from "@/lib/agents";
 import {
   DATASETS,
   datasetById,
@@ -33,7 +37,24 @@ import {
   type RunResults,
 } from "@/lib/studio-run";
 import { isLive, streamRun, streamAnalyze, type StreamHandlers } from "@/lib/api";
-import { Donut, Bars, DistBars, MetricTiles } from "@/components/studio/charts";
+import {
+  Donut,
+  Bars,
+  DistBars,
+  MetricTiles,
+  Pie,
+  MetricsBars,
+  StatCards,
+  Histogram,
+  Radar,
+  Scatter,
+  SmartInsights,
+  DataProfile,
+  QualityGauge,
+  BoxPlot,
+  CumulativeArea,
+} from "@/components/studio/charts";
+import { KnowledgeGraph3D } from "@/components/studio/knowledge-graph";
 import { Logo } from "@/components/site/logo";
 import { Button } from "@/components/ui/button";
 import { alpha, cn, fmt } from "@/lib/utils";
@@ -51,6 +72,31 @@ const GOAL_CHIPS = [
   "Build the most accurate model you can.",
   "Summarize the data and surface anything surprising.",
 ];
+
+const CONTEXT_PRESETS = [
+  "Finance",
+  "Healthcare",
+  "Retail",
+  "HR",
+  "Telecom",
+  "E-commerce",
+  "Marketing",
+  "B2B",
+  "B2C",
+  "Manufacturing",
+];
+
+// the 5 LLM-driven agent roles
+const LLM_ROLES = [
+  { id: "planner", name: "Planner" },
+  { id: "coder", name: "Coder" },
+  { id: "critic", name: "Critic" },
+  { id: "reporter", name: "Reporter" },
+  { id: "researcher", name: "Researcher" },
+];
+type RoleLLM = Record<string, { provider: string; model: string; apiKey: string }>;
+const emptyRoleLLM = (): RoleLLM =>
+  Object.fromEntries(LLM_ROLES.map((r) => [r.id, { provider: "", model: "", apiKey: "" }]));
 
 // Sample datasets span industries — the real path is "upload your own".
 const INDUSTRY: Record<string, string> = {
@@ -110,6 +156,11 @@ const PROVIDERS: { id: string; label: string; models: string[] }[] = [
     ],
   },
   { id: "gemini", label: "Google Gemini — free", models: ["gemini-2.0-flash", "gemini-1.5-flash"] },
+  {
+    id: "zai",
+    label: "Z.ai (GLM)",
+    models: ["glm-4.6", "glm-4.5", "glm-4.5-air", "glm-4.5-flash"],
+  },
 ];
 
 const initialStatuses = () =>
@@ -142,7 +193,7 @@ export function StudioClient() {
     initialStatuses,
   );
   const [logs, setLogs] = useState<LogLine[]>([]);
-  const [tab, setTab] = useState<"activity" | "results">("activity");
+  const [tab, setTab] = useState<"pipeline" | "activity" | "results">("pipeline");
   const [liveResults, setLiveResults] = useState<RunResults | null>(null);
   const [runMode, setRunMode] = useState<"sim" | "live">(
     isLive() ? "live" : "sim",
@@ -150,6 +201,10 @@ export function StudioClient() {
   const [provider, setProvider] = useState("groq");
   const [model, setModel] = useState(PROVIDERS[0].models[0]);
   const [apiKey, setApiKey] = useState("");
+  const [e2bKey, setE2bKey] = useState("");
+  const [contextTags, setContextTags] = useState<string[]>([]);
+  const [llmMode, setLlmMode] = useState<"single" | "perRole">("single");
+  const [roleLLM, setRoleLLM] = useState<RoleLLM>(emptyRoleLLM);
 
   const timers = useRef<number[]>([]);
   const logId = useRef(0);
@@ -184,17 +239,23 @@ export function StudioClient() {
       if (s.provider) setProvider(s.provider);
       if (s.model) setModel(s.model);
       if (s.apiKey) setApiKey(s.apiKey);
+      if (s.e2bKey) setE2bKey(s.e2bKey);
+      if (s.llmMode) setLlmMode(s.llmMode);
+      if (s.roleLLM) setRoleLLM({ ...emptyRoleLLM(), ...s.roleLLM });
     } catch {
       /* ignore */
     }
   }, []);
   useEffect(() => {
     try {
-      localStorage.setItem("helix_llm", JSON.stringify({ provider, model, apiKey }));
+      localStorage.setItem(
+        "helix_llm",
+        JSON.stringify({ provider, model, apiKey, e2bKey, llmMode, roleLLM }),
+      );
     } catch {
       /* ignore */
     }
-  }, [provider, model, apiKey]);
+  }, [provider, model, apiKey, e2bKey, llmMode, roleLLM]);
 
   const changeProvider = (p: string) => {
     setProvider(p);
@@ -276,7 +337,7 @@ export function StudioClient() {
     setStatuses(initialStatuses());
     setLogs([]);
     setLiveResults(null);
-    setTab("activity");
+    setTab("pipeline");
     setPhase("running");
 
     if (!isLive()) {
@@ -299,12 +360,28 @@ export function StudioClient() {
         setTab("results");
       },
     };
-    const llm = { provider, model, apiKey };
+    const buildLLMs = () => {
+      const def = { provider, model, api_key: apiKey };
+      if (llmMode === "single") return apiKey ? { default: def } : undefined;
+      const out: Record<string, { provider: string; model?: string; api_key: string }> = {};
+      if (apiKey) out.default = def;
+      for (const role of LLM_ROLES) {
+        const c = roleLLM[role.id];
+        if (c?.apiKey)
+          out[role.id] = {
+            provider: c.provider || provider || "groq",
+            model: c.model || undefined,
+            api_key: c.apiKey,
+          };
+      }
+      return Object.keys(out).length ? out : undefined;
+    };
+    const llm = { provider, model, apiKey, llms: buildLLMs() };
     const job =
       datasetId === "custom" && customFile
         ? streamAnalyze(
             customFile,
-            { goal, target, task: taskType, ...llm },
+            { goal, target, task: taskType, ...llm, e2bKey, context: contextTags.join(", ") },
             handlers,
             ctrl.signal,
           )
@@ -358,6 +435,25 @@ export function StudioClient() {
   const doneCount = AGENTS.filter((a) => statuses[a.id] === "done").length;
   const progress = Math.round((doneCount / AGENTS.length) * 100);
 
+  // group the streamed log lines by agent for the transparent Pipeline view
+  const logsByStage = logs.reduce<Record<string, LogLine[]>>((acc, l) => {
+    (acc[l.stage] ||= []).push(l);
+    return acc;
+  }, {});
+  const pipeCtx = {
+    goal,
+    dataset: ds.name,
+    rows: ds.rows,
+    cols: ds.cols,
+    target: datasetId === "custom" ? target || "(auto-detect)" : ds.target,
+    task: datasetId === "custom" ? taskType : ds.task,
+    provider: apiKey ? `${provider} · ${model}` : "offline mock",
+    sandbox: e2bKey ? "E2B microVM" : "RestrictedPython",
+  };
+  const criticFixes = (logsByStage["critic"] || []).filter((l) =>
+    l.text.includes("patched the code"),
+  ).length;
+
   return (
     <div className="min-h-screen">
       {/* top bar */}
@@ -408,6 +504,10 @@ export function StudioClient() {
             provider={provider}
             model={model}
             apiKey={apiKey}
+            e2bKey={e2bKey}
+            contextTags={contextTags}
+            llmMode={llmMode}
+            roleLLM={roleLLM}
             dragging={dragging}
             setGoal={setGoal}
             setTarget={setTarget}
@@ -415,6 +515,10 @@ export function StudioClient() {
             changeProvider={changeProvider}
             setModel={setModel}
             setApiKey={setApiKey}
+            setE2bKey={setE2bKey}
+            setContextTags={setContextTags}
+            setLlmMode={setLlmMode}
+            setRoleLLM={setRoleLLM}
             selectDataset={selectDataset}
             onRun={run}
             onDrop={onDrop}
@@ -465,13 +569,16 @@ export function StudioClient() {
                   </div>
                 </div>
 
-                <PipelinePanel statuses={statuses} />
+                <PipelinePanel statuses={statuses} criticFixes={criticFixes} />
               </div>
             </div>
 
             {/* right: activity / results */}
             <div className="lg:col-span-8">
               <div className="mb-4 flex items-center gap-2">
+                <TabBtn active={tab === "pipeline"} onClick={() => setTab("pipeline")}>
+                  Pipeline
+                </TabBtn>
                 <TabBtn active={tab === "activity"} onClick={() => setTab("activity")}>
                   Activity
                 </TabBtn>
@@ -488,7 +595,22 @@ export function StudioClient() {
               </div>
 
               <AnimatePresence mode="wait">
-                {tab === "activity" ? (
+                {tab === "pipeline" ? (
+                  <motion.div
+                    key="pipeline"
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                  >
+                    <PipelineFlow
+                      statuses={statuses}
+                      logsByStage={logsByStage}
+                      results={phase === "done" ? liveResults ?? ds.results : liveResults}
+                      ctx={pipeCtx}
+                      phase={phase}
+                    />
+                  </motion.div>
+                ) : tab === "activity" ? (
                   <motion.div
                     key="activity"
                     initial={{ opacity: 0 }}
@@ -574,6 +696,10 @@ function Setup({
   provider,
   model,
   apiKey,
+  e2bKey,
+  contextTags,
+  llmMode,
+  roleLLM,
   dragging,
   setGoal,
   setTarget,
@@ -581,6 +707,10 @@ function Setup({
   changeProvider,
   setModel,
   setApiKey,
+  setE2bKey,
+  setContextTags,
+  setLlmMode,
+  setRoleLLM,
   selectDataset,
   onRun,
   onDrop,
@@ -599,6 +729,10 @@ function Setup({
   provider: string;
   model: string;
   apiKey: string;
+  e2bKey: string;
+  contextTags: string[];
+  llmMode: "single" | "perRole";
+  roleLLM: RoleLLM;
   dragging: boolean;
   setGoal: (v: string) => void;
   setTarget: (v: string) => void;
@@ -606,6 +740,10 @@ function Setup({
   changeProvider: (v: string) => void;
   setModel: (v: string) => void;
   setApiKey: (v: string) => void;
+  setE2bKey: (v: string) => void;
+  setContextTags: (v: string[]) => void;
+  setLlmMode: (v: "single" | "perRole") => void;
+  setRoleLLM: (v: RoleLLM) => void;
   selectDataset: (id: string) => void;
   onRun: () => void;
   onDrop: (e: DragEvent) => void;
@@ -613,6 +751,10 @@ function Setup({
   fileInput: RefObject<HTMLInputElement | null>;
   onFile: (f: File | undefined) => void;
 }) {
+  const [showApiKey, setShowApiKey] = useState(false);
+  const [showE2bKey, setShowE2bKey] = useState(false);
+  const [showRoleKeys, setShowRoleKeys] = useState(false);
+  const [ctxInput, setCtxInput] = useState("");
   const needsTarget =
     datasetId === "custom" && taskType !== "clustering" && !target;
   const disabled = !goal.trim() || needsTarget;
@@ -835,11 +977,75 @@ function Setup({
             ))}
           </div>
         </div>
+
+        {/* dataset context tags → feed the Researcher */}
+        <div className="mt-3 rounded-2xl border border-white/10 bg-panel p-4">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-mute">
+              Dataset context
+            </span>
+            <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 font-mono text-[10px] text-mute">
+              optional · feeds the Researcher
+            </span>
+          </div>
+          <div className="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-white/10 bg-ink/70 px-2.5 py-2">
+            {contextTags.map((t) => (
+              <span
+                key={t}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-brand/40 bg-brand/10 px-2.5 py-1 text-xs text-brand"
+              >
+                {t}
+                <button
+                  type="button"
+                  onClick={() => setContextTags(contextTags.filter((x) => x !== t))}
+                  aria-label={`remove ${t}`}
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </span>
+            ))}
+            <input
+              value={ctxInput}
+              onChange={(e) => setCtxInput(e.target.value)}
+              onKeyDown={(e) => {
+                if ((e.key === "Enter" || e.key === ",") && ctxInput.trim()) {
+                  e.preventDefault();
+                  const t = ctxInput.trim().replace(/,+$/, "");
+                  if (t && !contextTags.includes(t)) setContextTags([...contextTags, t]);
+                  setCtxInput("");
+                } else if (e.key === "Backspace" && !ctxInput && contextTags.length) {
+                  setContextTags(contextTags.slice(0, -1));
+                }
+              }}
+              placeholder={
+                contextTags.length ? "add another…" : "e.g. telecom · B2C · monthly billing · churn"
+              }
+              className="min-w-[150px] flex-1 bg-transparent text-sm text-mist outline-none placeholder:text-mute"
+            />
+          </div>
+          <div className="mt-3 flex flex-wrap gap-2">
+            {CONTEXT_PRESETS.filter((p) => !contextTags.includes(p)).map((p) => (
+              <button
+                key={p}
+                type="button"
+                onClick={() => setContextTags([...contextTags, p])}
+                className="rounded-full border border-white/10 bg-white/[0.03] px-2.5 py-1 text-xs text-mute transition-colors hover:border-brand/40 hover:text-mist"
+              >
+                + {p}
+              </button>
+            ))}
+          </div>
+          <p className="mt-2 font-mono text-[10px] leading-relaxed text-mute">
+            Describe your data&apos;s domain/business so the{" "}
+            <span className="text-acid">Researcher</span> agent can pull relevant real-world context
+            from the live web.
+          </p>
+        </div>
       </div>
 
       {/* step 3 — AI engine */}
       <div className="mt-10">
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           <span className="grid h-7 w-7 place-items-center rounded-full border border-white/15 bg-white/5 font-mono text-xs text-brand">
             3
           </span>
@@ -847,6 +1053,28 @@ function Setup({
           <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 font-mono text-[10px] text-mute">
             optional
           </span>
+          <div className="ml-auto flex items-center gap-1 rounded-full border border-white/10 bg-white/5 p-1">
+            <button
+              type="button"
+              onClick={() => setLlmMode("single")}
+              className={cn(
+                "rounded-full px-3 py-1 text-xs transition-colors",
+                llmMode === "single" ? "bg-brand/15 text-brand" : "text-mute hover:text-mist",
+              )}
+            >
+              One model
+            </button>
+            <button
+              type="button"
+              onClick={() => setLlmMode("perRole")}
+              className={cn(
+                "rounded-full px-3 py-1 text-xs transition-colors",
+                llmMode === "perRole" ? "bg-brand/15 text-brand" : "text-mute hover:text-mist",
+              )}
+            >
+              Per-agent
+            </button>
+          </div>
         </div>
         <div className="mt-4 grid gap-3 rounded-2xl border border-white/10 bg-panel p-4 sm:grid-cols-3">
           <label className="block">
@@ -886,19 +1114,135 @@ function Setup({
             <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-mute">
               API key
             </span>
-            <input
-              type="password"
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              placeholder="paste key (or leave blank)"
-              className="mt-2 w-full rounded-lg border border-white/10 bg-ink/70 px-3 py-2 text-sm text-mist outline-none focus:border-brand/50"
-            />
+            <div className="relative mt-2">
+              <input
+                type={showApiKey ? "text" : "password"}
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+                placeholder="paste key (or leave blank)"
+                className="w-full rounded-lg border border-white/10 bg-ink/70 px-3 py-2 pr-10 text-sm text-mist outline-none focus:border-brand/50"
+              />
+              <button
+                type="button"
+                onClick={() => setShowApiKey((v) => !v)}
+                aria-label={showApiKey ? "Hide API key" : "Show API key"}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-mute transition-colors hover:text-mist"
+              >
+                {showApiKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+              </button>
+            </div>
           </label>
         </div>
         <p className="mt-2 font-mono text-[10px] leading-relaxed text-mute">
-          Key stored only in your browser. Blank = offline mock (real ML, mock narration). The ML
-          model itself is auto-selected by <span className="text-mist">FLAML</span>.
+          {llmMode === "perRole"
+            ? "Default — used by any agent you don't override below. "
+            : "Key stored only in your browser. Blank = offline mock (real ML, mock narration). "}
+          The ML model itself is auto-selected by <span className="text-mist">FLAML</span>.
         </p>
+
+        {llmMode === "perRole" && (
+          <div className="mt-3 rounded-2xl border border-white/10 bg-panel p-4">
+            <div className="mb-3 flex items-center justify-between">
+              <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-mute">
+                Per-agent models · use a different LLM per role
+              </span>
+              <button
+                type="button"
+                onClick={() => setShowRoleKeys(!showRoleKeys)}
+                className="font-mono text-[10px] text-mute transition-colors hover:text-mist"
+              >
+                {showRoleKeys ? "hide keys" : "show keys"}
+              </button>
+            </div>
+            <div className="space-y-2">
+              {LLM_ROLES.map((role) => {
+                const c = roleLLM[role.id];
+                const models =
+                  PROVIDERS.find((p) => p.id === (c.provider || provider))?.models ?? [];
+                const set = (patch: Partial<{ provider: string; model: string; apiKey: string }>) =>
+                  setRoleLLM({ ...roleLLM, [role.id]: { ...c, ...patch } });
+                return (
+                  <div key={role.id} className="rounded-lg border border-white/10 bg-white/[0.02] p-2.5">
+                    <div className="mb-1.5 text-xs font-medium text-mist">{role.name}</div>
+                    <div className="grid gap-2 sm:grid-cols-3">
+                      <select
+                        value={c.provider}
+                        onChange={(e) => set({ provider: e.target.value })}
+                        className="rounded-lg border border-white/10 bg-ink/70 px-2.5 py-1.5 text-xs text-mist outline-none focus:border-brand/50"
+                      >
+                        <option value="" className="bg-ink text-mist">
+                          use default
+                        </option>
+                        {PROVIDERS.map((p) => (
+                          <option key={p.id} value={p.id} className="bg-ink text-mist">
+                            {p.label}
+                          </option>
+                        ))}
+                      </select>
+                      <input
+                        list={`m-${role.id}`}
+                        value={c.model}
+                        onChange={(e) => set({ model: e.target.value })}
+                        placeholder="model"
+                        className="rounded-lg border border-white/10 bg-ink/70 px-2.5 py-1.5 text-xs text-mist outline-none focus:border-brand/50"
+                      />
+                      <datalist id={`m-${role.id}`}>
+                        {models.map((m) => (
+                          <option key={m} value={m} />
+                        ))}
+                      </datalist>
+                      <input
+                        type={showRoleKeys ? "text" : "password"}
+                        value={c.apiKey}
+                        onChange={(e) => set({ apiKey: e.target.value })}
+                        placeholder="key (or default)"
+                        className="rounded-lg border border-white/10 bg-ink/70 px-2.5 py-1.5 text-xs text-mist outline-none focus:border-brand/50"
+                      />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <p className="mt-2 font-mono text-[10px] leading-relaxed text-mute">
+              Leave a row blank to use the default above. Mix providers freely — e.g. a coder model
+              for the Coder, a cheaper one for the Reporter.
+            </p>
+          </div>
+        )}
+
+        <div className="mt-4 rounded-xl border border-white/10 bg-white/[0.02] p-4">
+          <div className="flex items-center gap-2">
+            <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-mute">
+              Secure execution · E2B microVM key
+            </span>
+            <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 font-mono text-[10px] text-mute">
+              optional
+            </span>
+          </div>
+          <div className="relative mt-2">
+            <input
+              type={showE2bKey ? "text" : "password"}
+              value={e2bKey}
+              onChange={(e) => setE2bKey(e.target.value)}
+              placeholder="e2b_… (blank = RestrictedPython sandbox)"
+              className="w-full rounded-lg border border-white/10 bg-ink/70 px-3 py-2 pr-10 text-sm text-mist outline-none focus:border-brand/50"
+            />
+            <button
+              type="button"
+              onClick={() => setShowE2bKey((v) => !v)}
+              aria-label={showE2bKey ? "Hide key" : "Show key"}
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-mute transition-colors hover:text-mist"
+            >
+              {showE2bKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+            </button>
+          </div>
+          <p className="mt-2 font-mono text-[10px] leading-relaxed text-mute">
+            With a key, agent-generated code runs in an isolated{" "}
+            <span className="text-mist">E2B microVM</span> (true VM isolation + hard
+            timeout). Blank = in-process RestrictedPython. Stored only in your browser ·
+            free key at <span className="text-mist">e2b.dev</span>.
+          </p>
+        </div>
       </div>
 
       {/* sticky, always-visible run bar */}
@@ -930,8 +1274,10 @@ function StepLabel({ n, title }: { n: number; title: string }) {
 /* --------------------------- PipelinePanel --------------------------- */
 function PipelinePanel({
   statuses,
+  criticFixes,
 }: {
   statuses: Record<AgentId, StageStatus>;
+  criticFixes: number;
 }) {
   return (
     <div className="rounded-2xl border border-white/10 bg-panel p-2">
@@ -978,11 +1324,17 @@ function PipelinePanel({
                 >
                   {a.name}
                 </span>
-                {a.id === "critic" && statuses.critic === "done" && (
-                  <span className="rounded-full bg-gold/15 px-1.5 py-0.5 font-mono text-[9px] text-gold">
-                    1 fix
-                  </span>
-                )}
+                {a.id === "critic" &&
+                  statuses.critic === "done" &&
+                  (criticFixes > 0 ? (
+                    <span className="rounded-full bg-gold/15 px-1.5 py-0.5 font-mono text-[9px] text-gold">
+                      {criticFixes} fix{criticFixes > 1 ? "es" : ""}
+                    </span>
+                  ) : (
+                    <span className="rounded-full bg-white/5 px-1.5 py-0.5 font-mono text-[9px] text-mute">
+                      no fixes
+                    </span>
+                  ))}
               </div>
               <div className="truncate font-mono text-[10px] text-mute">
                 {a.tech}
@@ -1013,6 +1365,244 @@ function StatusIcon({
       </span>
     );
   return <span className="h-1.5 w-1.5 rounded-full bg-mute/40" />;
+}
+
+/* --------------------------- Pipeline view --------------------------- */
+const STAGE_IO: Record<AgentId, { in: string; out: string }> = {
+  planner: { in: "Goal + dataset schema", out: "Step-by-step analysis plan" },
+  coder: { in: "Plan + retrieved DS docs (RAG)", out: "Executable Python" },
+  executor: { in: "Generated code + your data", out: "Sandbox stdout + cleaning" },
+  critic: { in: "Traceback from a failure", out: "Patched code → retry" },
+  automl: { in: "Cleaned, encoded features", out: "Best model + metrics" },
+  explainer: { in: "Trained model", out: "SHAP feature attributions" },
+  researcher: { in: "Goal + context + drivers", out: "Live web research synthesis" },
+  reporter: { in: "Metrics + drivers + insights + research", out: "Business narrative" },
+};
+
+function StatusBadge({ status, accent }: { status: StageStatus; accent: string }) {
+  if (status === "active")
+    return (
+      <span
+        className="inline-flex shrink-0 items-center gap-1.5 rounded-full px-2 py-0.5 font-mono text-[9px]"
+        style={{ color: accent, background: alpha(accent, 0.14) }}
+      >
+        <Loader2 className="h-3 w-3 animate-spin" /> running
+      </span>
+    );
+  if (status === "done")
+    return (
+      <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-acid/15 px-2 py-0.5 font-mono text-[9px] text-acid">
+        <Check className="h-3 w-3" /> done
+      </span>
+    );
+  if (status === "error")
+    return (
+      <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-coral/15 px-2 py-0.5 font-mono text-[9px] text-coral">
+        <X className="h-3 w-3" /> error
+      </span>
+    );
+  return (
+    <span className="shrink-0 rounded-full bg-white/5 px-2 py-0.5 font-mono text-[9px] text-mute">
+      queued
+    </span>
+  );
+}
+
+function StageCard({
+  agent,
+  status,
+  logs,
+  io,
+  index,
+}: {
+  agent: Agent;
+  status: StageStatus;
+  logs: LogLine[];
+  io: { in: string; out: string };
+  index: number;
+}) {
+  const accent = agent.accent;
+  const active = status === "active";
+  const done = status === "done";
+  const queued = status === "queued";
+  const Icon = agent.icon;
+  return (
+    <div className="relative pl-16">
+      {index < AGENTS.length - 1 && (
+        <div className="absolute bottom-[-12px] left-[31px] top-14 w-px bg-white/10">
+          <motion.div
+            className="w-full"
+            style={{ background: `linear-gradient(${accent}, ${alpha(accent, 0.1)})` }}
+            initial={{ height: 0 }}
+            animate={{ height: done ? "100%" : "0%" }}
+            transition={{ duration: 0.6, ease: "easeOut" }}
+          />
+        </div>
+      )}
+      <span
+        className="absolute left-2 top-2 grid h-12 w-12 place-items-center rounded-xl border"
+        style={{
+          borderColor: alpha(accent, queued ? 0.15 : 0.5),
+          background: alpha(accent, queued ? 0.04 : 0.14),
+        }}
+      >
+        <Icon className="h-5 w-5" style={{ color: queued ? "#76859f" : accent }} />
+        {active && (
+          <span
+            className="absolute inset-0 rounded-xl"
+            style={{ boxShadow: `0 0 22px -2px ${alpha(accent, 0.9)}` }}
+          />
+        )}
+      </span>
+      <div
+        className={cn(
+          "rounded-2xl border bg-panel p-4",
+          active ? "border-white/25" : "border-white/10",
+        )}
+      >
+        <div className="flex items-center justify-between gap-2">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-x-2">
+              <span className="font-mono text-[9px] text-mute">
+                {index + 1}/{AGENTS.length}
+              </span>
+              <span className="text-sm font-semibold text-white">{agent.name}</span>
+              <span className="truncate font-mono text-[10px] text-mute">{agent.tech}</span>
+            </div>
+            <div className="text-xs text-mute">{agent.role}</div>
+          </div>
+          <StatusBadge status={status} accent={accent} />
+        </div>
+
+        <div className="mt-3 flex items-start gap-2">
+          <span
+            className="shrink-0 rounded px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wider"
+            style={{ color: accent, background: alpha(accent, 0.14) }}
+          >
+            in
+          </span>
+          <span className="text-[12px] text-mist">{io.in}</span>
+        </div>
+        <ArrowDown className="my-1 ml-1.5 h-3 w-3 text-mute" />
+        <div className="flex items-start gap-2">
+          <span
+            className="shrink-0 rounded px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wider"
+            style={{ color: accent, background: alpha(accent, 0.14) }}
+          >
+            out
+          </span>
+          <span className="text-[12px] text-mute">{io.out}</span>
+        </div>
+
+        {logs.length > 0 ? (
+          <div className="scroll-thin mt-2 max-h-44 overflow-auto rounded-lg border border-white/10 bg-[#06080f] p-3 font-mono text-[11.5px] leading-relaxed">
+            {logs.map((l) => (
+              <div key={l.id} className={cn("whitespace-pre-wrap", LOG_COLOR[l.kind])}>
+                {l.text}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="mt-2 rounded-lg border border-dashed border-white/10 p-3 text-[11px] text-mute">
+            {queued ? "waiting for the upstream stage…" : active ? "working…" : "—"}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function PipelineFlow({
+  statuses,
+  logsByStage,
+  results,
+  ctx,
+  phase,
+}: {
+  statuses: Record<AgentId, StageStatus>;
+  logsByStage: Record<string, LogLine[]>;
+  results: RunResults | null;
+  ctx: {
+    goal: string;
+    dataset: string;
+    rows: number;
+    cols: number;
+    target: string;
+    task: string;
+    provider: string;
+    sandbox: string;
+  };
+  phase: Phase;
+}) {
+  const inChips: [string, string][] = [
+    ["dataset", ctx.dataset],
+    ["size", ctx.rows ? `${fmt(ctx.rows)} × ${ctx.cols}` : `${ctx.cols} cols`],
+    ["goal", ctx.goal],
+    ["target", ctx.target],
+    ["task", ctx.task],
+    ["AI engine", ctx.provider],
+    ["sandbox", ctx.sandbox],
+  ];
+  return (
+    <div className="space-y-3">
+      <div
+        className="rounded-2xl border p-4"
+        style={{ borderColor: alpha("#8b5cf6", 0.3), background: alpha("#8b5cf6", 0.05) }}
+      >
+        <div className="mb-2 flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.18em] text-mute">
+          <Upload className="h-3.5 w-3.5" /> Input
+        </div>
+        <div className="flex flex-wrap gap-2 text-xs">
+          {inChips.map(([k, v]) => (
+            <span key={k} className="rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1">
+              <span className="font-mono text-[10px] uppercase tracking-wider text-mute">{k}: </span>
+              <span className="text-mist">{v}</span>
+            </span>
+          ))}
+        </div>
+      </div>
+
+      {AGENTS.map((a, i) => (
+        <StageCard
+          key={a.id}
+          agent={a}
+          status={statuses[a.id]}
+          logs={logsByStage[a.id] || []}
+          io={STAGE_IO[a.id]}
+          index={i}
+        />
+      ))}
+
+      {results && phase === "done" && (
+        <div
+          className="rounded-2xl border p-4"
+          style={{ borderColor: alpha("#9ae64a", 0.3), background: alpha("#9ae64a", 0.05) }}
+        >
+          <div className="mb-2 flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.18em] text-mute">
+            <Check className="h-3.5 w-3.5 text-acid" /> Final output
+          </div>
+          <div className="flex flex-wrap gap-2 text-xs">
+            <span className="rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1">
+              <span className="font-mono text-[10px] uppercase text-mute">model: </span>
+              <span className="text-mist">{results.bestModel}</span>
+            </span>
+            <span className="rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1">
+              <span className="font-mono text-[10px] uppercase text-mute">
+                {results.headline.label}:{" "}
+              </span>
+              <span className="text-mist">{results.headline.value}</span>
+            </span>
+            {results.bars.slice(0, 3).map((b) => (
+              <span key={b.label} className="rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1">
+                <span className="font-mono text-[10px] uppercase text-mute">driver: </span>
+                <span className="text-mist">{b.label}</span>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 function TabBtn({
@@ -1053,6 +1643,7 @@ function Results({
   onDownload: () => void;
 }) {
   const r = results;
+  const [researchOn, setResearchOn] = useState(true);
   const rows = r._rows ?? ds.rows;
   const tgt = r._target ?? ds.target;
   const meta: [string, string][] = [];
@@ -1060,8 +1651,69 @@ function Results({
   meta.push(["task", r.taskLabel]);
   if (tgt && tgt !== "(unsupervised)") meta.push(["target", tgt]);
   if (r._features?.length) meta.push(["features used", String(r._features.length)]);
+
+  // auto-generated headline insights
+  const topSeg = r.dist.length
+    ? r.dist.reduce((a, b) => (b.value > a.value ? b : a), r.dist[0])
+    : null;
+  const findings: { label: string; value: string }[] = [
+    { label: "Best model", value: `${r.bestModel} · ${r.headline.value} ${r.headline.label}` },
+  ];
+  if (r.bars[0])
+    findings.push({
+      label: "Strongest driver",
+      value: `${r.bars[0].label} — ${(r.bars[0].sign ?? 1) >= 0 ? "raises" : "lowers"} ${tgt}`,
+    });
+  if (topSeg) findings.push({ label: "Key segment", value: `${topSeg.label} · ${topSeg.display}` });
+  if (r._corr && r._corr[0])
+    findings.push({
+      label: "Top correlation",
+      value: `${r._corr[0].a} ~ ${r._corr[0].b}  (r=${r._corr[0].r})`,
+    });
+  const balance = r._stats?.find((s) => s.label === "Class balance" || s.label.startsWith("Avg "));
+  if (balance) findings.push({ label: balance.label, value: balance.value });
+
+  const showResearch = researchOn && !!r._research;
+  const reportParas = researchOn ? r.report : r._report_base ?? r.report;
+  const rec = researchOn ? r.recommendation : r._recommendation_base ?? r.recommendation;
+
   return (
     <div className="space-y-4">
+      {/* web research comparison toggle */}
+      {r._research && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-acid/25 bg-acid/[0.04] p-4">
+          <div className="flex items-center gap-2">
+            <Globe className="h-4 w-4 text-acid" />
+            <span className="text-sm text-mist">Web research influence</span>
+            <span className="hidden font-mono text-[10px] text-mute sm:inline">
+              compare the report with vs without the live research agent
+            </span>
+          </div>
+          <div className="flex items-center gap-1 rounded-full border border-white/10 bg-white/5 p-1">
+            <button
+              type="button"
+              onClick={() => setResearchOn(true)}
+              className={cn(
+                "rounded-full px-3 py-1 text-xs transition-colors",
+                researchOn ? "bg-acid/15 text-acid" : "text-mute hover:text-mist",
+              )}
+            >
+              On
+            </button>
+            <button
+              type="button"
+              onClick={() => setResearchOn(false)}
+              className={cn(
+                "rounded-full px-3 py-1 text-xs transition-colors",
+                !researchOn ? "bg-white/10 text-white" : "text-mute hover:text-mist",
+              )}
+            >
+              Off
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* headline */}
       <div className="rounded-2xl border border-white/10 bg-panel p-6">
         <div className="flex flex-col items-center gap-6 sm:flex-row sm:items-center">
@@ -1084,11 +1736,87 @@ function Results({
               </span>
             </div>
             <div className="mt-4">
+              <div className="mb-2 font-mono text-[10px] uppercase tracking-[0.16em] text-mute">
+                Model performance · held-out test set
+              </div>
               <MetricTiles metrics={r.metrics} />
             </div>
           </div>
         </div>
       </div>
+
+      {/* key findings */}
+      {findings.length > 0 && (
+        <div className="rounded-2xl border border-white/10 bg-panel p-6">
+          <h3 className="mb-4 font-mono text-xs uppercase tracking-[0.16em] text-mute">
+            Key findings
+          </h3>
+          <div className="grid gap-3 sm:grid-cols-2">
+            {findings.map((f, i) => (
+              <div
+                key={i}
+                className="flex items-start gap-3 rounded-xl border border-white/10 bg-white/[0.03] p-3"
+              >
+                <span
+                  className="mt-1.5 h-2 w-2 shrink-0 rounded-full"
+                  style={{ background: ds.accent }}
+                />
+                <div className="min-w-0">
+                  <div className="font-mono text-[10px] uppercase tracking-wider text-mute">
+                    {f.label}
+                  </div>
+                  <div className="text-sm text-mist">{f.value}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* smart insights — auto-generated */}
+      {r._insights_text && r._insights_text.length > 0 && (
+        <div className="rounded-2xl border border-white/10 bg-panel p-6">
+          <div className="mb-4 flex items-center gap-2">
+            <Sparkles className="h-4 w-4 text-brand" />
+            <h3 className="font-mono text-xs uppercase tracking-[0.16em] text-mute">
+              Smart insights · auto-detected
+            </h3>
+          </div>
+          <SmartInsights items={r._insights_text} />
+        </div>
+      )}
+
+      {/* key statistics */}
+      {r._stats && r._stats.length > 0 && (
+        <div className="rounded-2xl border border-white/10 bg-panel p-6">
+          <h3 className="mb-4 font-mono text-xs uppercase tracking-[0.16em] text-mute">
+            Key statistics
+          </h3>
+          <StatCards stats={r._stats} />
+        </div>
+      )}
+
+      {/* data quality + data dictionary */}
+      {(r._quality || (r._profile && r._profile.length > 0)) && (
+        <div className="grid gap-4 lg:grid-cols-2">
+          {r._quality && (
+            <div className="rounded-2xl border border-white/10 bg-panel p-6">
+              <h3 className="mb-4 font-mono text-xs uppercase tracking-[0.16em] text-mute">
+                Data quality
+              </h3>
+              <QualityGauge quality={r._quality} />
+            </div>
+          )}
+          {r._profile && r._profile.length > 0 && (
+            <div className="rounded-2xl border border-white/10 bg-panel p-6">
+              <h3 className="mb-4 font-mono text-xs uppercase tracking-[0.16em] text-mute">
+                Data dictionary · {r._profile.length} columns
+              </h3>
+              <DataProfile profile={r._profile} />
+            </div>
+          )}
+        </div>
+      )}
 
       {/* data processing — transparency on YOUR data */}
       <div className="rounded-2xl border border-white/10 bg-panel p-6">
@@ -1158,19 +1886,197 @@ function Results({
         </div>
       </div>
 
+      {/* more insights: metric-comparison bars + distribution pie */}
+      <div className="grid gap-4 lg:grid-cols-2">
+        <div className="rounded-2xl border border-white/10 bg-panel p-5">
+          <h3 className="font-mono text-xs uppercase tracking-[0.16em] text-mute">
+            Model performance · metric comparison
+          </h3>
+          <div className="mt-5">
+            <MetricsBars metrics={r.metrics} accent={ds.accent} />
+          </div>
+        </div>
+        <div className="rounded-2xl border border-white/10 bg-panel p-5">
+          <h3 className="font-mono text-xs uppercase tracking-[0.16em] text-mute">
+            {r.distTitle} · share
+          </h3>
+          <div className="mt-5">
+            <Pie
+              items={r.dist.map((d) => ({ label: d.label, value: d.value }))}
+              accent={ds.accent}
+            />
+          </div>
+        </div>
+      </div>
+
+      {/* radar + histogram */}
+      <div className="grid gap-4 lg:grid-cols-2">
+        <div className="rounded-2xl border border-white/10 bg-panel p-5">
+          <h3 className="font-mono text-xs uppercase tracking-[0.16em] text-mute">
+            Feature importance · radar
+          </h3>
+          <div className="mt-4">
+            <Radar bars={r.bars} accent={ds.accent} />
+          </div>
+        </div>
+        {r._hist && (
+          <div className="rounded-2xl border border-white/10 bg-panel p-5">
+            <h3 className="font-mono text-xs uppercase tracking-[0.16em] text-mute">
+              {r._hist.feature} · distribution (histogram)
+            </h3>
+            <div className="mt-5">
+              <Histogram bins={r._hist.bins} accent={ds.accent} />
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* box plot + cumulative importance */}
+      <div className="grid gap-4 lg:grid-cols-2">
+        {r._box && r._box.boxes.length > 0 && (
+          <div className="rounded-2xl border border-white/10 bg-panel p-5">
+            <h3 className="font-mono text-xs uppercase tracking-[0.16em] text-mute">
+              {r._box.feature} · box plot{r._box.boxes.length > 1 ? ` by ${tgt}` : ""}
+            </h3>
+            <div className="mt-5">
+              <BoxPlot data={r._box} accent={ds.accent} />
+            </div>
+          </div>
+        )}
+        <div className="rounded-2xl border border-white/10 bg-panel p-5">
+          <h3 className="font-mono text-xs uppercase tracking-[0.16em] text-mute">
+            Cumulative importance · Pareto
+          </h3>
+          <div className="mt-4">
+            <CumulativeArea bars={r.bars} accent={ds.accent} />
+          </div>
+        </div>
+      </div>
+
+      {/* scatter */}
+      {r._scatter && r._scatter.points.length > 0 && (
+        <div className="rounded-2xl border border-white/10 bg-panel p-5">
+          <h3 className="font-mono text-xs uppercase tracking-[0.16em] text-mute">
+            {r._scatter.x} vs {r._scatter.y} · scatter (coloured by {tgt})
+          </h3>
+          <div className="mx-auto mt-4 max-w-lg">
+            <Scatter data={r._scatter} />
+          </div>
+        </div>
+      )}
+
+      {/* insight graph + driver contribution */}
+      <div className="rounded-2xl border border-white/10 bg-panel p-5">
+        <div className="flex items-center justify-between">
+          <h3 className="font-mono text-xs uppercase tracking-[0.16em] text-mute">
+            Insight graph · how drivers connect to {tgt}
+          </h3>
+          <span className="hidden font-mono text-[10px] text-mute sm:block">
+            drag · scroll · auto-rotates
+          </span>
+        </div>
+        <div className="mt-4 grid gap-5 lg:grid-cols-[1.7fr_1fr]">
+          <KnowledgeGraph3D bars={r.bars} target={tgt} taskLabel={r.taskLabel} graph={r._graph} />
+          <div className="flex flex-col">
+            <div className="mb-3 font-mono text-[10px] uppercase tracking-wider text-mute">
+              Driver contribution
+            </div>
+            <Pie
+              items={r.bars.map((b) => ({ label: b.label, value: b.value }))}
+              accent={ds.accent}
+            />
+            <p className="mt-4 text-[11px] leading-relaxed text-mute">
+              In the graph: <span className="text-brand">cyan</span> raises {tgt},{" "}
+              <span className="text-coral">coral</span> lowers it,{" "}
+              <span className="text-grape">purple</span> links correlated drivers, and{" "}
+              <span className="text-gold">gold</span> = {tgt} segments. Node size = strength.
+            </p>
+            {r._corr && r._corr.length > 0 && (
+              <div className="mt-4">
+                <div className="mb-2 font-mono text-[10px] uppercase tracking-wider text-mute">
+                  Top correlations
+                </div>
+                <ul className="space-y-1">
+                  {r._corr.slice(0, 5).map((c, i) => (
+                    <li
+                      key={i}
+                      className="flex items-center justify-between text-[11px] text-mist"
+                    >
+                      <span className="truncate">
+                        {c.a} ~ {c.b}
+                      </span>
+                      <span className="ml-2 font-mono text-mute">r={c.r}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* research & domain context — live web */}
+      {showResearch && r._research && (r._research.synthesis || r._research.hits.length > 0) && (
+        <div className="rounded-2xl border border-white/10 bg-panel p-6">
+          <div className="mb-3 flex items-center gap-2">
+            <Globe className="h-4 w-4 text-acid" />
+            <h3 className="font-mono text-xs uppercase tracking-[0.16em] text-mute">
+              Research &amp; domain context · live web
+            </h3>
+          </div>
+          {r._research.synthesis && (
+            <p className="text-sm leading-relaxed text-mist">{r._research.synthesis}</p>
+          )}
+          {r._research.hits.length > 0 && (
+            <div className="mt-4 space-y-2">
+              <div className="font-mono text-[10px] uppercase tracking-wider text-mute">
+                Sources · {r._research.hits.length}
+              </div>
+              {r._research.hits.map((h, i) => (
+                <a
+                  key={i}
+                  href={h.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="block rounded-xl border border-white/10 bg-white/[0.03] p-3 transition-colors hover:border-acid/40"
+                >
+                  <div className="truncate text-sm text-mist">{h.title || h.url}</div>
+                  {h.snippet && (
+                    <div className="mt-0.5 line-clamp-2 text-xs text-mute">{h.snippet}</div>
+                  )}
+                  <div className="mt-1 truncate font-mono text-[10px] text-acid/70">{h.url}</div>
+                </a>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* report */}
       <div className="rounded-2xl border border-white/10 bg-panel p-6">
         <div className="flex items-center justify-between">
-          <h3 className="font-mono text-xs uppercase tracking-[0.16em] text-mute">
-            Business report
-          </h3>
+          <div className="flex items-center gap-2">
+            <h3 className="font-mono text-xs uppercase tracking-[0.16em] text-mute">
+              Business report
+            </h3>
+            {r._research && (
+              <span
+                className={cn(
+                  "rounded-full px-2 py-0.5 font-mono text-[9px]",
+                  researchOn ? "bg-acid/15 text-acid" : "bg-white/5 text-mute",
+                )}
+              >
+                {researchOn ? "research-enriched" : "data-only"}
+              </span>
+            )}
+          </div>
           <Button variant="secondary" size="sm" onClick={onDownload}>
             <Download className="h-4 w-4" />
             Download
           </Button>
         </div>
         <div className="mt-4 space-y-3">
-          {r.report.map((p, i) => (
+          {reportParas.map((p, i) => (
             <p key={i} className="text-sm leading-relaxed text-mist">
               {p}
             </p>
@@ -1191,9 +2097,7 @@ function Results({
             <div className="font-mono text-[10px] uppercase tracking-wider text-mute">
               Recommendation
             </div>
-            <p className="mt-1 text-sm leading-relaxed text-white">
-              {r.recommendation}
-            </p>
+            <p className="mt-1 text-sm leading-relaxed text-white">{rec}</p>
           </div>
         </div>
       </div>
