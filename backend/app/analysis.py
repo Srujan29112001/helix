@@ -216,6 +216,13 @@ def analyze_dataframe(
         target, task_label, headline, bars, dist, dist_title
     )
     insights = _insights(df, X, y, target, bars, dist, is_clf, features)
+    if insights.get("_scatter"):
+        if is_clf and len(classes) >= 2:
+            low = f"{target} = {classes[0]}"
+            high = f"{target} = {classes[1]}" if len(classes) == 2 else "other classes"
+            insights["_scatter"]["legend"] = {"low": low, "high": high}
+        else:
+            insights["_scatter"]["legend"] = {"low": f"lower {target}", "high": f"higher {target}"}
 
     return {
         "taskLabel": task_label,

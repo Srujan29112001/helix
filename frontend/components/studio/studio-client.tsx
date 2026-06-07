@@ -53,6 +53,7 @@ import {
   QualityGauge,
   BoxPlot,
   CumulativeArea,
+  LineChart,
 } from "@/components/studio/charts";
 import { KnowledgeGraph3D } from "@/components/studio/knowledge-graph";
 import { Logo } from "@/components/site/logo";
@@ -1931,27 +1932,37 @@ function Results({
         )}
       </div>
 
-      {/* box plot + cumulative importance */}
+      {/* line charts: distribution trend + cumulative importance (always shown) */}
       <div className="grid gap-4 lg:grid-cols-2">
-        {r._box && r._box.boxes.length > 0 && (
-          <div className="rounded-2xl border border-white/10 bg-panel p-5">
-            <h3 className="font-mono text-xs uppercase tracking-[0.16em] text-mute">
-              {r._box.feature} · box plot{r._box.boxes.length > 1 ? ` by ${tgt}` : ""}
-            </h3>
-            <div className="mt-5">
-              <BoxPlot data={r._box} accent={ds.accent} />
-            </div>
-          </div>
-        )}
         <div className="rounded-2xl border border-white/10 bg-panel p-5">
           <h3 className="font-mono text-xs uppercase tracking-[0.16em] text-mute">
-            Cumulative importance · Pareto
+            {r.distTitle} · line trend
+          </h3>
+          <div className="mt-4">
+            <LineChart items={r.dist} accent={ds.accent} />
+          </div>
+        </div>
+        <div className="rounded-2xl border border-white/10 bg-panel p-5">
+          <h3 className="font-mono text-xs uppercase tracking-[0.16em] text-mute">
+            Cumulative importance · Pareto (line)
           </h3>
           <div className="mt-4">
             <CumulativeArea bars={r.bars} accent={ds.accent} />
           </div>
         </div>
       </div>
+
+      {/* box plot */}
+      {r._box && r._box.boxes.length > 0 && (
+        <div className="rounded-2xl border border-white/10 bg-panel p-5">
+          <h3 className="font-mono text-xs uppercase tracking-[0.16em] text-mute">
+            {r._box.feature} · box plot{r._box.boxes.length > 1 ? ` by ${tgt}` : ""}
+          </h3>
+          <div className="mt-5">
+            <BoxPlot data={r._box} accent={ds.accent} />
+          </div>
+        </div>
+      )}
 
       {/* scatter */}
       {r._scatter && r._scatter.points.length > 0 && (

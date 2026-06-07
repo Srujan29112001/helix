@@ -71,7 +71,12 @@ export interface RunResults {
   _hist?: { feature: string; bins: { label: string; count: number }[] } | null;
   _graph?: { nodes: GraphNode[]; links: GraphLink[] } | null;
   _stats?: { label: string; value: string }[];
-  _scatter?: { x: string; y: string; points: { x: number; y: number; c: number }[] } | null;
+  _scatter?: {
+    x: string;
+    y: string;
+    points: { x: number; y: number; c: number }[];
+    legend?: { low: string; high: string };
+  } | null;
   _profile?: { name: string; type: string; missing: number; unique: number }[];
   _quality?: { score: number; missing: number; duplicates: number; constant_cols: number } | null;
   _box?: {

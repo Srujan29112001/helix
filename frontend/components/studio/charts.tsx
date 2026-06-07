@@ -315,11 +315,16 @@ export function Histogram({
   );
 }
 
-/** Scatter plot of two features, coloured by the target. */
+/** Scatter plot of two features, coloured by the target, with a legend. */
 export function Scatter({
   data,
 }: {
-  data: { x: string; y: string; points: { x: number; y: number; c: number }[] };
+  data: {
+    x: string;
+    y: string;
+    points: { x: number; y: number; c: number }[];
+    legend?: { low: string; high: string };
+  };
 }) {
   const W = 300;
   const H = 230;
@@ -344,6 +349,56 @@ export function Scatter({
       <div className="mt-1 flex items-center justify-between font-mono text-[9px] text-mute">
         <span>{data.x} →</span>
         <span>↑ {data.y}</span>
+      </div>
+      {data.legend && (
+        <div className="mt-3 flex flex-wrap items-center justify-center gap-4 text-[11px] text-mist">
+          <span className="flex items-center gap-1.5">
+            <span className="h-2.5 w-2.5 rounded-full" style={{ background: "#25d7f0" }} />
+            {data.legend.low}
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span className="h-2.5 w-2.5 rounded-full" style={{ background: "#fb7185" }} />
+            {data.legend.high}
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Line chart of an ordered breakdown/distribution. */
+export function LineChart({ items, accent = "#25d7f0" }: { items: DistItem[]; accent?: string }) {
+  if (items.length < 2) return null;
+  const W = 300;
+  const H = 190;
+  const P = 30;
+  const max = Math.max(...items.map((d) => d.value), 0.0001);
+  const xs = (i: number) => P + (items.length > 1 ? i / (items.length - 1) : 0) * (W - P - 10);
+  const ys = (v: number) => H - P - (v / max) * (H - P - 14);
+  const line = items.map((d, i) => `${xs(i).toFixed(1)},${ys(d.value).toFixed(1)}`).join(" ");
+  const area = `${xs(0)},${H - P} ${line} ${xs(items.length - 1)},${H - P}`;
+  return (
+    <div>
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full">
+        <line x1={P} y1={H - P} x2={W - 8} y2={H - P} stroke="rgba(255,255,255,0.15)" />
+        <line x1={P} y1={8} x2={P} y2={H - P} stroke="rgba(255,255,255,0.15)" />
+        <polygon points={area} fill={alpha(accent, 0.12)} />
+        <polyline points={line} fill="none" stroke={accent} strokeWidth="2" />
+        {items.map((d, i) => (
+          <g key={i}>
+            <circle cx={xs(i)} cy={ys(d.value)} r="3.5" fill={accent} />
+            <text x={xs(i)} y={ys(d.value) - 7} fontSize="8" fill="#9fb0c9" textAnchor="middle">
+              {d.display}
+            </text>
+          </g>
+        ))}
+      </svg>
+      <div className="mt-1 flex gap-1">
+        {items.map((d, i) => (
+          <span key={i} className="flex-1 truncate text-center font-mono text-[8px] text-mute">
+            {d.label}
+          </span>
+        ))}
       </div>
     </div>
   );
