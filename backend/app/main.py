@@ -180,7 +180,7 @@ async def _analyze_stream(
 @app.post("/api/analyze")
 async def analyze(
     file: UploadFile = File(...),
-    target: str = Form(...),
+    target: str = Form(""),
     goal: str = Form(""),
     task: str = Form("auto"),
     provider: str = Form("groq"),

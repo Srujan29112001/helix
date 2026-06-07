@@ -20,7 +20,7 @@ import pandas as pd
 
 
 def _is_classification(y: pd.Series) -> bool:
-    if y.dtype == object or str(y.dtype) == "category":
+    if not pd.api.types.is_numeric_dtype(y):
         return True
     if pd.api.types.is_float_dtype(y) and y.nunique() > 15:
         return False
@@ -39,7 +39,7 @@ def clean(df: pd.DataFrame, target: str) -> tuple[pd.DataFrame, list[str]]:
 
     # coerce numeric-looking object columns (e.g. Telco 'TotalCharges' has blanks)
     for col in df.columns:
-        if col == target or df[col].dtype != object:
+        if col == target or pd.api.types.is_numeric_dtype(df[col]):
             continue
         coerced = pd.to_numeric(df[col], errors="coerce")
         valid = coerced.notna().sum()
@@ -58,7 +58,7 @@ def clean(df: pd.DataFrame, target: str) -> tuple[pd.DataFrame, list[str]]:
             c.lower() == "id"
             or c.lower().endswith("id")
             or (
-                df[c].dtype == object
+                not pd.api.types.is_numeric_dtype(df[c])
                 and df[c].nunique(dropna=False) == len(df)
                 and df[c].astype(str).str.len().mean() < 25  # short keys, not free text
             )
@@ -101,15 +101,25 @@ def analyze_dataframe(
     is_clf = _is_classification(y_raw) if task in ("auto", "nlp") else (task == "classification")
     X = df.drop(columns=[target]).copy()
 
-    # NLP: detect & TF-IDF a free-text feature column
+    # Free-text handling. Near-unique non-numeric columns are either free text
+    # (reviews) or identifiers (names, ticket numbers). TF-IDF them ONLY for an
+    # explicit NLP task (or when text is the only signal); otherwise drop them as
+    # noise so structured tasks aren't hijacked by, e.g., a Name column.
     text_terms: list[tuple[str, float]] = []
-    for c in list(X.columns):
-        if X[c].dtype == object:
-            s = X[c].dropna().astype(str)
-            if len(s) and s.str.len().mean() > 20 and s.nunique() >= 15:
-                X, text_terms = _vectorize_text(X, c)
-                fixes.append(f"vectorized text column '{c}' with TF-IDF")
-                break
+    hicard = [
+        c
+        for c in X.columns
+        if not pd.api.types.is_numeric_dtype(X[c])
+        and X[c].nunique(dropna=False) > max(30, 0.5 * len(X))
+    ]
+    other = [c for c in X.columns if c not in hicard]
+    if hicard and (task == "nlp" or not other):
+        textcol = max(hicard, key=lambda c: X[c].dropna().astype(str).str.len().mean())
+        X, text_terms = _vectorize_text(X, textcol)
+        fixes.append(f"vectorized text column '{textcol}' with TF-IDF")
+    elif hicard:
+        X = X.drop(columns=hicard)
+        fixes.append("dropped high-cardinality text/identifier column(s): " + ", ".join(hicard))
 
     # parse date columns into numeric parts (universal across domains)
     X = _extract_dates(X, fixes)
@@ -117,15 +127,15 @@ def analyze_dataframe(
     # impute + encode features
     imputed = False
     for c in X.columns:
-        if X[c].dtype == object or str(X[c].dtype) == "category":
-            X[c] = X[c].astype("category").cat.codes  # NaN → -1
+        if not pd.api.types.is_numeric_dtype(X[c]):
+            X[c] = X[c].astype("category").cat.codes  # NaN → -1 (object / str / category)
         else:
             if X[c].isna().any():
                 X[c] = X[c].fillna(X[c].median())
                 imputed = True
     if imputed:
         fixes.append("imputed missing numeric values with the median")
-    n_cat = int(sum(df[c].dtype == object for c in df.columns if c != target))
+    n_cat = int(sum(not pd.api.types.is_numeric_dtype(df[c]) for c in df.columns if c != target))
     if n_cat:
         fixes.append(f"label-encoded {n_cat} categorical feature(s)")
 
@@ -630,7 +640,7 @@ def _extract_dates(X: pd.DataFrame, fixes: list[str]) -> pd.DataFrame:
     import warnings as _w
 
     for c in list(X.columns):
-        if X[c].dtype != object:
+        if pd.api.types.is_numeric_dtype(X[c]):
             continue
         s = X[c].dropna().astype(str)
         if not len(s) or s.str.len().mean() > 30:
@@ -683,7 +693,7 @@ def _cluster(df: pd.DataFrame) -> dict[str, Any]:
         if c.lower() == "id"
         or c.lower().endswith("id")
         or (
-            work[c].dtype == object
+            not pd.api.types.is_numeric_dtype(work[c])
             and work[c].nunique(dropna=False) == len(work)
             and work[c].astype(str).str.len().mean() < 25
         )
@@ -692,7 +702,7 @@ def _cluster(df: pd.DataFrame) -> dict[str, Any]:
         work = work.drop(columns=ids)
         fixes.append("dropped identifier column(s): " + ", ".join(ids))
     for c in work.columns:
-        if work[c].dtype == object:
+        if not pd.api.types.is_numeric_dtype(work[c]):
             num = pd.to_numeric(work[c], errors="coerce")
             work[c] = num if num.notna().sum() >= 0.8 * len(work) else work[c].astype("category").cat.codes
     work = work.fillna(work.median(numeric_only=True)).select_dtypes(include="number")
