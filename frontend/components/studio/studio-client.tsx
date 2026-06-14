@@ -28,6 +28,7 @@ import {
   BarChart3,
   Gauge,
   FileText,
+  Network,
 } from "lucide-react";
 import { AGENTS, type AgentId, type Agent } from "@/lib/agents";
 import {
@@ -607,7 +608,7 @@ export function StudioClient() {
                 </TabBtn>
               </div>
 
-              <AnimatePresence mode="wait">
+              <AnimatePresence initial={false}>
                 {tab === "pipeline" ? (
                   <motion.div
                     key="pipeline"
@@ -1930,7 +1931,7 @@ function Results({
               {r._charts!.length} · chart + data table + note
             </span>
           </div>
-          <div className="grid gap-4 lg:grid-cols-2">
+          <div className="space-y-5">
             {r._charts!.map((c) => (
               <ChartCard key={c.id} card={c} accent={ds.accent} />
             ))}
@@ -2052,54 +2053,15 @@ function Results({
         </>
       )}
 
-      {/* insight graph + driver contribution */}
-      <div className="rounded-2xl border border-white/10 bg-panel p-5">
-        <div className="flex items-center justify-between">
+      {/* knowledge graph — the whole analysis as one interactive map */}
+      <div className="rounded-2xl border border-white/10 bg-panel p-5 sm:p-6">
+        <div className="mb-4 flex items-center gap-2">
+          <Network className="h-4 w-4 text-brand" />
           <h3 className="font-mono text-xs uppercase tracking-[0.16em] text-mute">
-            Insight graph · how drivers connect to {tgt}
+            Knowledge graph · the whole analysis, mapped
           </h3>
-          <span className="hidden font-mono text-[10px] text-mute sm:block">
-            drag · scroll · auto-rotates
-          </span>
         </div>
-        <div className="mt-4 grid gap-5 lg:grid-cols-[1.7fr_1fr]">
-          <KnowledgeGraph3D bars={r.bars} target={tgt} taskLabel={r.taskLabel} graph={r._graph} />
-          <div className="flex flex-col">
-            <div className="mb-3 font-mono text-[10px] uppercase tracking-wider text-mute">
-              Driver contribution
-            </div>
-            <Pie
-              items={r.bars.map((b) => ({ label: b.label, value: b.value }))}
-              accent={ds.accent}
-            />
-            <p className="mt-4 text-[11px] leading-relaxed text-mute">
-              In the graph: <span className="text-brand">cyan</span> raises {tgt},{" "}
-              <span className="text-coral">coral</span> lowers it,{" "}
-              <span className="text-grape">purple</span> links correlated drivers, and{" "}
-              <span className="text-gold">gold</span> = {tgt} segments. Node size = strength.
-            </p>
-            {r._corr && r._corr.length > 0 && (
-              <div className="mt-4">
-                <div className="mb-2 font-mono text-[10px] uppercase tracking-wider text-mute">
-                  Top correlations
-                </div>
-                <ul className="space-y-1">
-                  {r._corr.slice(0, 5).map((c, i) => (
-                    <li
-                      key={i}
-                      className="flex items-center justify-between text-[11px] text-mist"
-                    >
-                      <span className="truncate">
-                        {c.a} ~ {c.b}
-                      </span>
-                      <span className="ml-2 font-mono text-mute">r={c.r}</span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-          </div>
-        </div>
+        <KnowledgeGraph3D results={r} accent={ds.accent} />
       </div>
 
       {/* research & domain context — live web */}

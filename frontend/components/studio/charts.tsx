@@ -62,11 +62,11 @@ export function Bars({ bars, accent }: { bars: ResultBar[]; accent: string }) {
 
   if (!diverging) {
     return (
-      <div className="space-y-3">
+      <div className="space-y-3.5">
         {bars.map((b, i) => (
-          <div key={b.label} className="grid grid-cols-[118px_1fr_34px] items-center gap-3">
-            <span className="truncate text-right text-xs text-mist">{b.label}</span>
-            <div className="h-2.5 overflow-hidden rounded-full bg-white/5">
+          <div key={b.label} className="grid grid-cols-[minmax(96px,180px)_1fr_52px] items-center gap-3">
+            <span className="truncate text-right text-[13px] text-mist" title={b.label}>{b.label}</span>
+            <div className="h-3.5 overflow-hidden rounded-full bg-white/5">
               <motion.div
                 className="h-full rounded-full"
                 style={{ background: `linear-gradient(90deg, ${alpha(accent, 0.45)}, ${accent})` }}
@@ -75,7 +75,7 @@ export function Bars({ bars, accent }: { bars: ResultBar[]; accent: string }) {
                 transition={{ duration: 0.8, delay: 0.15 + i * 0.07, ease: [0.16, 1, 0.3, 1] }}
               />
             </div>
-            <span className="text-right font-mono text-[10px] text-mute">{b.value.toFixed(2)}</span>
+            <span className="text-right font-mono text-[11px] text-mute">{b.value.toFixed(2)}</span>
           </div>
         ))}
       </div>
@@ -83,12 +83,12 @@ export function Bars({ bars, accent }: { bars: ResultBar[]; accent: string }) {
   }
 
   return (
-    <div className="space-y-2.5">
-      <div className="grid grid-cols-[118px_1fr_34px] gap-3">
+    <div className="space-y-3">
+      <div className="grid grid-cols-[minmax(96px,180px)_1fr_56px] gap-3">
         <span />
-        <div className="flex justify-between font-mono text-[9px] uppercase tracking-wider text-mute">
-          <span>decreases</span>
-          <span>increases</span>
+        <div className="flex justify-between font-mono text-[10px] uppercase tracking-wider text-mute">
+          <span>← decreases</span>
+          <span>increases →</span>
         </div>
         <span />
       </div>
@@ -96,12 +96,12 @@ export function Bars({ bars, accent }: { bars: ResultBar[]; accent: string }) {
         const positive = (b.sign ?? 1) >= 0;
         const col = positive ? "#25d7f0" : "#fb7185";
         return (
-          <div key={b.label} className="grid grid-cols-[118px_1fr_34px] items-center gap-3">
-            <span className="truncate text-right text-xs text-mist">{b.label}</span>
-            <div className="relative h-4">
+          <div key={b.label} className="grid grid-cols-[minmax(96px,180px)_1fr_56px] items-center gap-3">
+            <span className="truncate text-right text-[13px] text-mist" title={b.label}>{b.label}</span>
+            <div className="relative h-5">
               <div className="absolute left-1/2 top-0 h-full w-px bg-white/15" />
               <motion.div
-                className="absolute top-1/2 h-2.5 -translate-y-1/2 rounded-sm"
+                className="absolute top-1/2 h-3 -translate-y-1/2 rounded-sm"
                 style={
                   positive
                     ? { background: col, boxShadow: `0 0 10px ${alpha(col, 0.6)}`, left: "50%" }
@@ -112,7 +112,7 @@ export function Bars({ bars, accent }: { bars: ResultBar[]; accent: string }) {
                 transition={{ duration: 0.7, delay: 0.15 + i * 0.07, ease: [0.16, 1, 0.3, 1] }}
               />
             </div>
-            <span className="text-right font-mono text-[10px]" style={{ color: col }}>
+            <span className="text-right font-mono text-[11px]" style={{ color: col }}>
               {positive ? "+" : "−"}
               {b.value.toFixed(2)}
             </span>
@@ -125,14 +125,14 @@ export function Bars({ bars, accent }: { bars: ResultBar[]; accent: string }) {
 
 export function DistBars({ items, accent }: { items: DistItem[]; accent: string }) {
   return (
-    <div className="space-y-3">
+    <div className="space-y-3.5">
       {items.map((d, i) => (
         <div key={d.label}>
-          <div className="mb-1 flex items-center justify-between text-xs">
-            <span className="text-mist">{d.label}</span>
-            <span className="font-mono text-mute">{d.display}</span>
+          <div className="mb-1.5 flex items-center justify-between gap-3 text-[13px]">
+            <span className="truncate text-mist" title={d.label}>{d.label}</span>
+            <span className="shrink-0 font-mono text-mist">{d.display}</span>
           </div>
-          <div className="h-2.5 overflow-hidden rounded-full bg-white/5">
+          <div className="h-3 overflow-hidden rounded-full bg-white/5">
             <motion.div
               className="h-full rounded-full"
               style={{ background: `linear-gradient(90deg, ${alpha(accent, 0.4)}, ${accent})` }}
@@ -296,23 +296,23 @@ export function Histogram({
   const max = Math.max(...bins.map((b) => b.count), 1);
   return (
     <div>
-      <div className="flex h-44 items-end gap-1.5">
+      <div className="flex h-56 items-end gap-2">
         {bins.map((b, i) => (
           <div key={i} className="flex h-full flex-1 flex-col items-center justify-end">
-            <span className="mb-1 font-mono text-[9px] text-mute">{b.count}</span>
+            <span className="mb-1 font-mono text-[10px] text-mist">{b.count.toLocaleString()}</span>
             <motion.div
               className="w-full rounded-t"
               style={{ background: `linear-gradient(180deg, ${accent}, ${alpha(accent, 0.3)})` }}
               initial={{ height: 0 }}
-              animate={{ height: `${(b.count / max) * 86}%` }}
+              animate={{ height: `${(b.count / max) * 88}%` }}
               transition={{ duration: 0.7, delay: 0.1 + i * 0.05, ease: [0.16, 1, 0.3, 1] }}
             />
           </div>
         ))}
       </div>
-      <div className="mt-2 flex gap-1.5">
+      <div className="mt-2 flex gap-2 border-t border-white/5 pt-2">
         {bins.map((b, i) => (
-          <span key={i} className="flex-1 truncate text-center font-mono text-[8px] text-mute">
+          <span key={i} className="flex-1 truncate text-center font-mono text-[9px] text-mute" title={b.label}>
             {b.label}
           </span>
         ))}
@@ -332,30 +332,34 @@ export function Scatter({
     legend?: { low: string; high: string };
   };
 }) {
-  const W = 300;
-  const H = 230;
-  const P = 26;
+  const W = 560;
+  const H = 340;
+  const P = 38;
   const col = (c: number) => (c >= 0.5 ? "#fb7185" : "#25d7f0");
   return (
     <div>
-      <svg viewBox={`0 0 ${W} ${H}`} className="w-full">
-        <line x1={P} y1={H - P} x2={W - 8} y2={H - P} stroke="rgba(255,255,255,0.15)" />
-        <line x1={P} y1={8} x2={P} y2={H - P} stroke="rgba(255,255,255,0.15)" />
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" preserveAspectRatio="xMidYMid meet">
+        {[0.25, 0.5, 0.75].map((g) => (
+          <g key={g}>
+            <line x1={P} y1={H - P - g * (H - P - 16)} x2={W - 10} y2={H - P - g * (H - P - 16)} stroke="rgba(255,255,255,0.05)" />
+            <line x1={P + g * (W - P - 16)} y1={12} x2={P + g * (W - P - 16)} y2={H - P} stroke="rgba(255,255,255,0.05)" />
+          </g>
+        ))}
+        <line x1={P} y1={H - P} x2={W - 10} y2={H - P} stroke="rgba(255,255,255,0.18)" />
+        <line x1={P} y1={12} x2={P} y2={H - P} stroke="rgba(255,255,255,0.18)" />
         {data.points.map((pt, i) => (
           <circle
             key={i}
-            cx={P + pt.x * (W - P - 14)}
-            cy={H - P - pt.y * (H - P - 14)}
-            r="3"
+            cx={P + pt.x * (W - P - 16)}
+            cy={H - P - pt.y * (H - P - 16)}
+            r="4"
             fill={col(pt.c)}
-            opacity={0.65}
+            opacity={0.6}
           />
         ))}
+        <text x={(W + P) / 2} y={H - 8} fontSize="12" fill="#9fb0c9" textAnchor="middle">{data.x} →</text>
+        <text x={14} y={(H - P) / 2} fontSize="12" fill="#9fb0c9" textAnchor="middle" transform={`rotate(-90 14 ${(H - P) / 2})`}>↑ {data.y}</text>
       </svg>
-      <div className="mt-1 flex items-center justify-between font-mono text-[9px] text-mute">
-        <span>{data.x} →</span>
-        <span>↑ {data.y}</span>
-      </div>
       {data.legend && (
         <div className="mt-3 flex flex-wrap items-center justify-center gap-4 text-[11px] text-mist">
           <span className="flex items-center gap-1.5">
@@ -375,33 +379,36 @@ export function Scatter({
 /** Line chart of an ordered breakdown/distribution. */
 export function LineChart({ items, accent = "#25d7f0" }: { items: DistItem[]; accent?: string }) {
   if (items.length < 2) return null;
-  const W = 300;
-  const H = 190;
-  const P = 30;
+  const W = 660;
+  const H = 250;
+  const P = 38;
   const max = Math.max(...items.map((d) => d.value), 0.0001);
-  const xs = (i: number) => P + (items.length > 1 ? i / (items.length - 1) : 0) * (W - P - 10);
-  const ys = (v: number) => H - P - (v / max) * (H - P - 14);
+  const xs = (i: number) => P + (items.length > 1 ? i / (items.length - 1) : 0) * (W - P - 16);
+  const ys = (v: number) => H - P - (v / max) * (H - P - 28);
   const line = items.map((d, i) => `${xs(i).toFixed(1)},${ys(d.value).toFixed(1)}`).join(" ");
   const area = `${xs(0)},${H - P} ${line} ${xs(items.length - 1)},${H - P}`;
   return (
     <div>
-      <svg viewBox={`0 0 ${W} ${H}`} className="w-full">
-        <line x1={P} y1={H - P} x2={W - 8} y2={H - P} stroke="rgba(255,255,255,0.15)" />
-        <line x1={P} y1={8} x2={P} y2={H - P} stroke="rgba(255,255,255,0.15)" />
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" preserveAspectRatio="xMidYMid meet">
+        {[0.25, 0.5, 0.75, 1].map((g) => (
+          <line key={g} x1={P} y1={ys(max * g)} x2={W - 10} y2={ys(max * g)} stroke="rgba(255,255,255,0.06)" />
+        ))}
+        <line x1={P} y1={H - P} x2={W - 10} y2={H - P} stroke="rgba(255,255,255,0.18)" />
+        <line x1={P} y1={12} x2={P} y2={H - P} stroke="rgba(255,255,255,0.18)" />
         <polygon points={area} fill={alpha(accent, 0.12)} />
-        <polyline points={line} fill="none" stroke={accent} strokeWidth="2" />
+        <polyline points={line} fill="none" stroke={accent} strokeWidth="2.5" />
         {items.map((d, i) => (
           <g key={i}>
-            <circle cx={xs(i)} cy={ys(d.value)} r="3.5" fill={accent} />
-            <text x={xs(i)} y={ys(d.value) - 7} fontSize="8" fill="#9fb0c9" textAnchor="middle">
+            <circle cx={xs(i)} cy={ys(d.value)} r="4" fill={accent} />
+            <text x={xs(i)} y={ys(d.value) - 10} fontSize="12" fill="#cdd8ea" textAnchor="middle">
               {d.display}
             </text>
           </g>
         ))}
       </svg>
-      <div className="mt-1 flex gap-1">
+      <div className="mt-1 flex gap-2">
         {items.map((d, i) => (
-          <span key={i} className="flex-1 truncate text-center font-mono text-[8px] text-mute">
+          <span key={i} className="flex-1 truncate text-center font-mono text-[10px] text-mute" title={d.label}>
             {d.label}
           </span>
         ))}
@@ -415,8 +422,8 @@ export function Radar({ bars, accent = "#25d7f0" }: { bars: ResultBar[]; accent?
   const items = bars.slice(0, 6);
   const n = items.length;
   if (n < 3) return <Bars bars={bars} accent={accent} />;
-  const C = 120;
-  const R = 88;
+  const C = 150;
+  const R = 108;
   const ang = (i: number) => (2 * Math.PI * i) / n - Math.PI / 2;
   const at = (i: number, rad: number): [number, number] => [
     +(C + rad * Math.cos(ang(i))).toFixed(1),
@@ -425,7 +432,7 @@ export function Radar({ bars, accent = "#25d7f0" }: { bars: ResultBar[]; accent?
   const rings = [0.25, 0.5, 0.75, 1];
   const poly = items.map((b, i) => at(i, R * Math.max(0.05, b.value)).join(",")).join(" ");
   return (
-    <svg viewBox="0 0 240 240" className="mx-auto h-60 w-full max-w-[300px]">
+    <svg viewBox="0 0 300 300" className="mx-auto h-72 w-full max-w-[360px]">
       {rings.map((r) => (
         <polygon
           key={r}
@@ -445,18 +452,18 @@ export function Radar({ bars, accent = "#25d7f0" }: { bars: ResultBar[]; accent?
         return <circle key={b.label} cx={x} cy={y} r="2.5" fill={accent} />;
       })}
       {items.map((b, i) => {
-        const [lx, ly] = at(i, R + 16);
+        const [lx, ly] = at(i, R + 22);
         return (
           <text
             key={b.label}
             x={lx}
             y={ly}
-            fontSize="8"
+            fontSize="11"
             fill="#9fb0c9"
             textAnchor="middle"
             dominantBaseline="middle"
           >
-            {b.label.length > 13 ? b.label.slice(0, 12) + "…" : b.label}
+            {b.label.length > 14 ? b.label.slice(0, 13) + "…" : b.label}
           </text>
         );
       })}
@@ -634,31 +641,32 @@ export function CumulativeArea({ bars, accent = "#25d7f0" }: { bars: ResultBar[]
     cum += b.value / total;
     return { y: cum, label: b.label };
   });
-  const W = 300;
-  const H = 190;
-  const P = 26;
-  const xs = (i: number) => P + (pts.length > 1 ? i / (pts.length - 1) : 0) * (W - P - 10);
-  const ys = (y: number) => H - P - y * (H - P - 12);
+  const W = 660;
+  const H = 250;
+  const P = 38;
+  const xs = (i: number) => P + (pts.length > 1 ? i / (pts.length - 1) : 0) * (W - P - 16);
+  const ys = (y: number) => H - P - y * (H - P - 20);
   const line = pts.map((p, i) => `${xs(i).toFixed(1)},${ys(p.y).toFixed(1)}`).join(" ");
   const area = `${xs(0)},${H - P} ${line} ${xs(pts.length - 1)},${H - P}`;
   return (
     <div>
-      <svg viewBox={`0 0 ${W} ${H}`} className="w-full">
-        <line x1={P} y1={H - P} x2={W - 8} y2={H - P} stroke="rgba(255,255,255,0.15)" />
-        <line x1={P} y1={8} x2={P} y2={H - P} stroke="rgba(255,255,255,0.15)" />
-        <line x1={P} y1={ys(0.8)} x2={W - 8} y2={ys(0.8)} stroke="rgba(255,255,255,0.12)" strokeDasharray="3 3" />
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" preserveAspectRatio="xMidYMid meet">
+        <line x1={P} y1={H - P} x2={W - 10} y2={H - P} stroke="rgba(255,255,255,0.18)" />
+        <line x1={P} y1={12} x2={P} y2={H - P} stroke="rgba(255,255,255,0.18)" />
+        <line x1={P} y1={ys(0.8)} x2={W - 10} y2={ys(0.8)} stroke="rgba(255,255,255,0.14)" strokeDasharray="4 4" />
         <polygon points={area} fill={alpha(accent, 0.18)} />
-        <polyline points={line} fill="none" stroke={accent} strokeWidth="2" />
+        <polyline points={line} fill="none" stroke={accent} strokeWidth="2.5" />
         {pts.map((p, i) => (
-          <circle key={i} cx={xs(i)} cy={ys(p.y)} r="3" fill={accent} />
+          <circle key={i} cx={xs(i)} cy={ys(p.y)} r="4" fill={accent} />
         ))}
-        <text x={W - 10} y={ys(0.8) - 4} fontSize="8" fill="#76859f" textAnchor="end">
-          80%
-        </text>
+        <text x={W - 12} y={ys(0.8) - 6} fontSize="11" fill="#76859f" textAnchor="end">80% of signal</text>
       </svg>
-      <div className="mt-1 flex justify-between font-mono text-[9px] text-mute">
-        <span>{pts[0]?.label}</span>
-        <span>cumulative importance →</span>
+      <div className="mt-1 flex gap-2">
+        {pts.map((p, i) => (
+          <span key={i} className="flex-1 truncate text-center font-mono text-[10px] text-mute" title={p.label}>
+            {p.label}
+          </span>
+        ))}
       </div>
     </div>
   );
@@ -680,38 +688,38 @@ export function Heatmap({
   return (
     <div className="scroll-thin overflow-auto">
       <div
-        className="inline-grid gap-0.5"
-        style={{ gridTemplateColumns: `84px repeat(${n}, minmax(26px, 1fr))` }}
+        className="mx-auto inline-grid gap-1"
+        style={{ gridTemplateColumns: `120px repeat(${n}, minmax(44px, 1fr))` }}
       >
         <div />
         {labels.map((l, i) => (
           <div
             key={i}
             title={l}
-            className="truncate px-1 py-1 text-center font-mono text-[8px] text-mute"
+            className="truncate px-1 py-1.5 text-center font-mono text-[10px] text-mute"
           >
-            {short(l, 6)}
+            {short(l, 8)}
           </div>
         ))}
         {matrix.map((row, ri) => (
           <Fragment key={ri}>
             <div
               title={labels[ri]}
-              className="truncate py-1 pr-1 text-right font-mono text-[9px] text-mute"
+              className="flex items-center justify-end truncate py-1 pr-2 font-mono text-[11px] text-mist"
             >
-              {short(labels[ri], 11)}
+              {short(labels[ri], 14)}
             </div>
             {row.map((v, ci) => (
               <div
                 key={ci}
                 title={`${labels[ri]} ~ ${labels[ci]}: ${v}`}
-                className="grid aspect-square place-items-center rounded-sm font-mono text-[8px]"
+                className="grid aspect-square place-items-center rounded-md font-mono text-[11px]"
                 style={{
                   background: alpha(accent, Math.max(0.05, Math.min(1, Math.abs(v)))),
                   color: Math.abs(v) > 0.6 ? "#06080f" : "#9fb0c9",
                 }}
               >
-                {v.toFixed(1)}
+                {v.toFixed(2)}
               </div>
             ))}
           </Fragment>
@@ -832,31 +840,34 @@ export function ChartCard({
       chart = <Bars bars={items as ResultBar[]} accent={accent} />;
   }
   const ax = card.axes ?? {};
+  const centered = card.type === "pie" || card.type === "radar";
   return (
-    <div className="rounded-2xl border border-white/10 bg-panel p-5">
+    <div className="rounded-2xl border border-white/10 bg-panel p-5 sm:p-6">
       <div className="flex items-center justify-between gap-2">
         <h3 className="font-mono text-xs uppercase tracking-[0.16em] text-mute">{card.title}</h3>
         <span
-          className="shrink-0 rounded-full px-2 py-0.5 font-mono text-[9px]"
+          className="shrink-0 rounded-full px-2.5 py-0.5 font-mono text-[10px]"
           style={{ color: accent, background: alpha(accent, 0.14) }}
         >
           {card.type}
         </span>
       </div>
-      <div className="mt-4 grid gap-5 lg:grid-cols-[1.45fr_1fr]">
-        <div className="min-w-0">
-          {chart}
-          {(ax.x || ax.y) && (
-            <div className="mt-2 flex justify-between font-mono text-[9px] text-mute">
-              <span>{ax.x ? `x · ${ax.x}` : ""}</span>
-              <span>{ax.y ? `y · ${ax.y}` : ""}</span>
-            </div>
-          )}
-        </div>
-        <div className="space-y-3">
-          <ChartDataTable table={card.table} />
-          <ChartNote text={card.note} />
-        </div>
+
+      {/* big chart on top — full card width */}
+      <div className="mt-5 rounded-xl border border-white/5 bg-[#070a12] px-4 py-5">
+        <div className={cn("min-w-0", centered && "mx-auto max-w-md")}>{chart}</div>
+        {(ax.x || ax.y) && (
+          <div className="mt-3 flex items-center justify-between border-t border-white/5 pt-2 font-mono text-[10px] text-mute">
+            <span>{ax.x ? `X · ${ax.x}` : ""}</span>
+            <span>{ax.y ? `Y · ${ax.y}` : ""}</span>
+          </div>
+        )}
+      </div>
+
+      {/* data table + how-to-read note side by side beneath the chart */}
+      <div className="mt-4 grid gap-3 md:grid-cols-2">
+        <ChartDataTable table={card.table} />
+        <ChartNote text={card.note} />
       </div>
     </div>
   );
