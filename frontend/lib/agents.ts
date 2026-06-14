@@ -5,6 +5,7 @@ import {
   Wrench,
   Sparkles,
   ScanSearch,
+  BarChart3,
   Globe,
   FileText,
   type LucideIcon,
@@ -17,6 +18,7 @@ export type AgentId =
   | "critic"
   | "automl"
   | "explainer"
+  | "visualizer"
   | "researcher"
   | "reporter";
 
@@ -111,8 +113,20 @@ export const AGENTS: Agent[] = [
     accent: "#e879f9",
   },
   {
-    id: "researcher",
+    id: "visualizer",
     index: 6,
+    name: "Visualizer",
+    role: "Picks the right charts",
+    tech: "LLM chart selection",
+    blurb: "Chooses the best chart for each finding — for any domain.",
+    detail:
+      "Given the goal, the dataset's columns and the model's findings, it selects the most revealing chart type for each insight (and proposes context-specific aggregations). The engine fills every chart with real data — the LLM never invents numbers — and each chart ships with a data table and an explanatory note.",
+    icon: BarChart3,
+    accent: "#22d3ee",
+  },
+  {
+    id: "researcher",
+    index: 7,
     name: "Researcher",
     role: "Researches the web",
     tech: "Live web search",
@@ -124,7 +138,7 @@ export const AGENTS: Agent[] = [
   },
   {
     id: "reporter",
-    index: 7,
+    index: 8,
     name: "Reporter",
     role: "Writes the story",
     tech: "Mistral-7B",

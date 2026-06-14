@@ -1,8 +1,14 @@
 "use client";
 
+import { Fragment, type ReactNode } from "react";
 import { motion } from "motion/react";
-import type { ResultBar, DistItem } from "@/lib/studio-run";
-import { alpha } from "@/lib/utils";
+import type {
+  ResultBar,
+  DistItem,
+  ChartCard as ChartCardData,
+  ChartTable,
+} from "@/lib/studio-run";
+import { alpha, cn } from "@/lib/utils";
 
 export function Donut({
   fraction,
@@ -653,6 +659,204 @@ export function CumulativeArea({ bars, accent = "#25d7f0" }: { bars: ResultBar[]
       <div className="mt-1 flex justify-between font-mono text-[9px] text-mute">
         <span>{pts[0]?.label}</span>
         <span>cumulative importance →</span>
+      </div>
+    </div>
+  );
+}
+
+/** Correlation heatmap — a coloured grid of pairwise values. */
+export function Heatmap({
+  labels,
+  matrix,
+  accent = "#25d7f0",
+}: {
+  labels: string[];
+  matrix: number[][];
+  accent?: string;
+}) {
+  const n = labels.length;
+  if (!n || !matrix.length) return null;
+  const short = (s: string, k: number) => (s.length > k ? s.slice(0, k) + "…" : s);
+  return (
+    <div className="scroll-thin overflow-auto">
+      <div
+        className="inline-grid gap-0.5"
+        style={{ gridTemplateColumns: `84px repeat(${n}, minmax(26px, 1fr))` }}
+      >
+        <div />
+        {labels.map((l, i) => (
+          <div
+            key={i}
+            title={l}
+            className="truncate px-1 py-1 text-center font-mono text-[8px] text-mute"
+          >
+            {short(l, 6)}
+          </div>
+        ))}
+        {matrix.map((row, ri) => (
+          <Fragment key={ri}>
+            <div
+              title={labels[ri]}
+              className="truncate py-1 pr-1 text-right font-mono text-[9px] text-mute"
+            >
+              {short(labels[ri], 11)}
+            </div>
+            {row.map((v, ci) => (
+              <div
+                key={ci}
+                title={`${labels[ri]} ~ ${labels[ci]}: ${v}`}
+                className="grid aspect-square place-items-center rounded-sm font-mono text-[8px]"
+                style={{
+                  background: alpha(accent, Math.max(0.05, Math.min(1, Math.abs(v)))),
+                  color: Math.abs(v) > 0.6 ? "#06080f" : "#9fb0c9",
+                }}
+              >
+                {v.toFixed(1)}
+              </div>
+            ))}
+          </Fragment>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** The data behind a chart, as a compact scrollable table. */
+export function ChartDataTable({ table }: { table: ChartTable }) {
+  if (!table || !table.columns?.length) return null;
+  return (
+    <div className="scroll-thin max-h-60 overflow-auto rounded-lg border border-white/10 bg-white/[0.02]">
+      <table className="w-full text-left text-xs">
+        <thead className="sticky top-0 bg-panel">
+          <tr className="font-mono text-[10px] uppercase tracking-wider text-mute">
+            {table.columns.map((c, i) => (
+              <th key={i} className={cn("px-3 py-2", c.align === "right" && "text-right")}>
+                {c.label}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {table.rows.map((row, ri) => (
+            <tr key={ri} className="border-t border-white/5">
+              {row.map((cell, ci) => (
+                <td
+                  key={ci}
+                  className={cn(
+                    "px-3 py-1.5",
+                    table.columns[ci]?.align === "right"
+                      ? "text-right font-mono text-mute"
+                      : "text-mist",
+                  )}
+                >
+                  {String(cell)}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {table.caption && (
+        <div className="px-3 py-1.5 font-mono text-[9px] text-mute">{table.caption}</div>
+      )}
+    </div>
+  );
+}
+
+/** A short "how to read this" note for a chart. */
+export function ChartNote({ text }: { text: string }) {
+  if (!text) return null;
+  return (
+    <div className="rounded-lg border border-white/10 bg-white/[0.02] p-3">
+      <div className="mb-1 font-mono text-[9px] uppercase tracking-wider text-mute">
+        How to read this
+      </div>
+      <p className="text-[12px] leading-relaxed text-mute">{text}</p>
+    </div>
+  );
+}
+
+/** Unified chart card: an LLM-chosen chart + its data table + an explanatory note.
+ *  Every value comes from the engine; the dispatcher just picks the right primitive. */
+export function ChartCard({
+  card,
+  accent = "#25d7f0",
+}: {
+  card: ChartCardData;
+  accent?: string;
+}) {
+  const d = card.data ?? {};
+  const items = d.items ?? [];
+  let chart: ReactNode;
+  switch (card.type) {
+    case "bar":
+      chart = <Bars bars={items as ResultBar[]} accent={accent} />;
+      break;
+    case "column":
+      chart = <DistBars items={items as DistItem[]} accent={accent} />;
+      break;
+    case "pie":
+      chart = <Pie items={items.map((x) => ({ label: x.label, value: x.value }))} accent={accent} />;
+      break;
+    case "line":
+      chart = <LineChart items={items as DistItem[]} accent={accent} />;
+      break;
+    case "area":
+      chart = <CumulativeArea bars={items as ResultBar[]} accent={accent} />;
+      break;
+    case "radar":
+      chart = <Radar bars={items as ResultBar[]} accent={accent} />;
+      break;
+    case "histogram":
+      chart = <Histogram bins={d.bins ?? []} accent={accent} />;
+      break;
+    case "scatter":
+      chart =
+        d.x && d.y && d.points ? (
+          <Scatter data={{ x: d.x, y: d.y, points: d.points, legend: d.legend }} />
+        ) : null;
+      break;
+    case "box":
+      chart =
+        d.feature && d.boxes ? (
+          <BoxPlot data={{ feature: d.feature, boxes: d.boxes }} accent={accent} />
+        ) : null;
+      break;
+    case "heatmap":
+      chart = <Heatmap labels={d.labels ?? []} matrix={d.matrix ?? []} accent={accent} />;
+      break;
+    case "statcards":
+      chart = <StatCards stats={items.map((x) => ({ label: x.label, value: String(x.display ?? x.value) }))} />;
+      break;
+    default:
+      chart = <Bars bars={items as ResultBar[]} accent={accent} />;
+  }
+  const ax = card.axes ?? {};
+  return (
+    <div className="rounded-2xl border border-white/10 bg-panel p-5">
+      <div className="flex items-center justify-between gap-2">
+        <h3 className="font-mono text-xs uppercase tracking-[0.16em] text-mute">{card.title}</h3>
+        <span
+          className="shrink-0 rounded-full px-2 py-0.5 font-mono text-[9px]"
+          style={{ color: accent, background: alpha(accent, 0.14) }}
+        >
+          {card.type}
+        </span>
+      </div>
+      <div className="mt-4 grid gap-5 lg:grid-cols-[1.45fr_1fr]">
+        <div className="min-w-0">
+          {chart}
+          {(ax.x || ax.y) && (
+            <div className="mt-2 flex justify-between font-mono text-[9px] text-mute">
+              <span>{ax.x ? `x · ${ax.x}` : ""}</span>
+              <span>{ax.y ? `y · ${ax.y}` : ""}</span>
+            </div>
+          )}
+        </div>
+        <div className="space-y-3">
+          <ChartDataTable table={card.table} />
+          <ChartNote text={card.note} />
+        </div>
       </div>
     </div>
   );

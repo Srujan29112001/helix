@@ -51,6 +51,9 @@ class MockLLM(LLMProvider):
                 f"No live web results were available, so this draws on general domain knowledge: {goal} "
                 "typically hinges on the drivers the model surfaced above."
             )
+        if role == "visualizer":
+            # empty -> the engine falls back to its deterministic chart gallery
+            return ""
         return ""
 
 
@@ -90,6 +93,23 @@ _SYSTEM = {
         "context that complements the analysis: what the field/industry already knows about these drivers, "
         "relevant benchmarks, regulations or best practices. Ground claims in the provided search snippets; if no "
         "results are available, use general domain knowledge and say it is not live. Be specific — no fluff, no markdown."
+    ),
+    "visualizer": (
+        "You are a data-visualization expert choosing the BEST charts for a specific dataset, goal and industry. "
+        "Output ONLY a JSON array (no prose, no markdown fences) of at most 8 chart specs, ordered most to least "
+        "important for the user's goal and context. You MUST NOT invent or output any numeric data — choose only the "
+        "chart type, a data source the engine will compute on the real data, a concise title (<=60 chars), a one-line "
+        "note explaining what the chart shows and how to read it, and optional axis labels. "
+        "Allowed type: column|bar|line|area|pie|radar|histogram|scatter|box|heatmap|statcards. "
+        "Each spec is {\"type\":...,\"source\":{...},\"title\":...,\"note\":...,\"axes\":{\"x\":...,\"y\":...}}. "
+        "source.kind is one of: "
+        "\"aggregate\" {\"kind\":\"aggregate\",\"groupby\":<col>,\"of\":<numeric col or null>,\"agg\":\"mean|sum|count|median|min|max\",\"top\":<int>}; "
+        "\"distribution\" {\"kind\":\"distribution\",\"column\":<col>,\"bins\":<int>}; "
+        "\"corr_matrix\" {\"kind\":\"corr_matrix\",\"columns\":[<numeric cols>]}; "
+        "\"insight\" {\"kind\":\"insight\",\"ref\":\"bars|dist|corr|hist|scatter|box|stats\"}. "
+        "Reference ONLY column names from the provided profile. Favour aggregate/distribution charts that reveal the "
+        "story for THIS domain, and match the chart type to the finding (line for trends, pie for shares, heatmap for "
+        "correlations, box for spread, scatter for relationships, histogram for a single column's distribution)."
     ),
 }
 
@@ -205,6 +225,25 @@ def _build_user_prompt(role: str, context: dict[str, Any]) -> str:
             f"Model's key drivers: {context.get('drivers','')}\n"
             f"Web search results:\n{src}\n"
             "Write the 3-4 sentence external research synthesis."
+        )
+    if role == "visualizer":
+        prof = context.get("profile", []) or []
+        nums = [p["name"] for p in prof if p.get("type") == "numeric"]
+        cats = [p["name"] for p in prof if p.get("type") in ("categorical", "date")]
+        plines = "\n".join(
+            f"- {p['name']} ({p.get('type','?')}, {p.get('unique','?')} unique, {p.get('missing','?')}% missing)"
+            for p in prof[:40]
+        ) or "(no profile)"
+        avail = ", ".join(context.get("insights", [])) or "(none)"
+        return head + (
+            f"Goal: {context.get('goal','')}\n"
+            f"Industry / context tags: {context.get('context','') or '(none)'}\n"
+            f"Target: {context.get('target','')}\n"
+            f"Numeric columns: {', '.join(nums) or '(none)'}\n"
+            f"Categorical / date columns: {', '.join(cats) or '(none)'}\n"
+            f"Column profile:\n{plines}\n"
+            f"Pre-computed engine insights available as source.ref: {avail}\n"
+            "Return the JSON array of up to 8 chart specs now."
         )
     return head
 

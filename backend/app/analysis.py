@@ -12,6 +12,7 @@ instead of crashing.
 
 from __future__ import annotations
 
+import json
 import math
 from typing import Any
 
@@ -84,18 +85,24 @@ def analyze_dataframe(
     time_budget: int = 20,
 ) -> dict[str, Any]:
     df.columns = [c.strip() for c in df.columns]
+    src_rows = int(df.attrs.get("source_rows", len(df)))
+    src_cols = int(df.attrs.get("source_cols", df.shape[1]))
+    read_note = df.attrs.get("read_note")
     if task == "clustering":
-        return _cluster(df)
+        return _cluster(df, src_rows, src_cols)
     target = target.strip()
     if target not in df.columns:
         raise ValueError(f"target column '{target}' not found in dataset")
 
-    df, fixes = clean(df, target)
-
-    # sample very large data for speed
+    # sample very large data BEFORE cleaning, so clean()'s copy stays small
     if len(df) > 30000:
         df = df.sample(30000, random_state=42)
-        fixes.append("sampled 30,000 rows for a fast run")
+
+    df, fixes = clean(df, target)
+    if read_note:
+        fixes.insert(0, read_note)
+    if src_rows > 30000:
+        fixes.append(f"sampled 30,000 of {src_rows:,} rows for a fast run")
 
     y_raw = df[target]
     is_clf = _is_classification(y_raw) if task in ("auto", "nlp") else (task == "classification")
@@ -139,6 +146,23 @@ def analyze_dataframe(
     if n_cat:
         fixes.append(f"label-encoded {n_cat} categorical feature(s)")
 
+    # memory: downcast the (now fully numeric) feature matrix to 32-bit
+    for c in X.columns:
+        try:
+            X[c] = pd.to_numeric(X[c], downcast="float")
+        except Exception:  # noqa: BLE001
+            pass
+
+    # feature cap: on very wide data keep the top-variance columns so SHAP/FLAML
+    # stay fast and memory-safe (up to ~500 raw features -> 150)
+    MAX_FEATURES = 150
+    if X.shape[1] > MAX_FEATURES:
+        orig_n = X.shape[1]
+        variances = X.var(numeric_only=True).fillna(0.0)
+        keep = list(variances.sort_values(ascending=False).head(MAX_FEATURES).index)
+        X = X[keep]
+        fixes.append(f"selected the top {MAX_FEATURES} features by variance (from {orig_n}) for speed")
+
     features = list(X.columns)
 
     # target encoding
@@ -171,6 +195,8 @@ def analyze_dataframe(
 
         automl = AutoML()
         metric = ("roc_auc" if binary else "accuracy") if is_clf else "r2"
+        # cap parallelism on big data so 16GB hosts don't blow up on all cores
+        big = len(X_train) * max(1, X.shape[1]) > 4_000_000
         automl.fit(
             X_train,
             y_train,
@@ -179,6 +205,7 @@ def analyze_dataframe(
             metric=metric,
             verbose=0,
             early_stop=True,
+            n_jobs=4 if big else -1,
         )
         model = automl.model.estimator
         best_model = {
@@ -253,6 +280,8 @@ def analyze_dataframe(
         "_cols": int(df.shape[1]),
         "_train_rows": n_train,
         "_test_rows": n_test,
+        "_source_rows": src_rows,
+        "_source_cols": src_cols,
         "_metric": opt_metric,
         "_drivers": [
             {"feature": b["label"], "importance": round(b["value"], 2), "direction": b.get("sign", 0)}
@@ -679,14 +708,19 @@ def _vectorize_text(X: pd.DataFrame, col: str):
     return X.drop(columns=[col]).join(tf), terms
 
 
-def _cluster(df: pd.DataFrame) -> dict[str, Any]:
+def _cluster(df: pd.DataFrame, src_rows: int | None = None, src_cols: int | None = None) -> dict[str, Any]:
     """Unsupervised KMeans with silhouette-based k selection."""
     from sklearn.cluster import KMeans
     from sklearn.metrics import silhouette_score
     from sklearn.preprocessing import StandardScaler
 
     fixes: list[str] = []
+    if df.attrs.get("read_note"):
+        fixes.append(df.attrs["read_note"])
     work = df.copy()
+    # sample large data up front (before per-column coercion) for speed/memory
+    if len(work) > 20000:
+        work = work.sample(20000, random_state=42)
     ids = [
         c
         for c in work.columns
@@ -708,9 +742,15 @@ def _cluster(df: pd.DataFrame) -> dict[str, Any]:
     work = work.fillna(work.median(numeric_only=True)).select_dtypes(include="number")
     if work.shape[1] < 2:
         raise ValueError("clustering needs at least 2 numeric features")
-    if len(work) > 20000:
-        work = work.sample(20000, random_state=42)
-        fixes.append("sampled 20,000 rows for a fast run")
+    # feature cap on very wide data
+    if work.shape[1] > 150:
+        orig_n = work.shape[1]
+        variances = work.var(numeric_only=True).fillna(0.0)
+        keep = list(variances.sort_values(ascending=False).head(150).index)
+        work = work[keep]
+        fixes.append(f"selected the top 150 features by variance (from {orig_n}) for speed")
+    if src_rows and src_rows > 20000:
+        fixes.append(f"sampled 20,000 of {src_rows:,} rows for a fast run")
 
     Xs = StandardScaler().fit_transform(work)
     best_k, best_sil, best_labels = 2, -1.0, None
@@ -719,7 +759,7 @@ def _cluster(df: pd.DataFrame) -> dict[str, Any]:
         sil = silhouette_score(Xs, labels)
         if sil > best_sil:
             best_k, best_sil, best_labels = k, sil, labels
-    fixes.append(f"label-encoded {sum(df[c].dtype == object for c in df.columns)} categorical feature(s)")
+    fixes.append(f"label-encoded {sum(not pd.api.types.is_numeric_dtype(df[c]) for c in df.columns)} categorical feature(s)")
 
     sizes = pd.Series(best_labels).value_counts(normalize=True).sort_index()
     dist = [
@@ -757,5 +797,360 @@ def _cluster(df: pd.DataFrame) -> dict[str, Any]:
         "_target": "(unsupervised)",
         "_rows": int(len(work)),
         "_cols": int(df.shape[1]),
+        "_source_rows": int(src_rows or len(df)),
+        "_source_cols": int(src_cols or df.shape[1]),
         "_drivers": [{"feature": b["label"], "importance": round(b["value"], 2), "direction": 0} for b in bars[:4]],
     }
+
+
+# ───────────────────────── chart-card builder ──────────────────────────
+# The Visualizer LLM only ever chooses chart TYPE + a data SOURCE + title/note.
+# These pure-python helpers fill the actual numbers from the real DataFrame or
+# from insights the trusted engine already computed — the LLM never emits data,
+# so a chart can never show a fabricated value. Anything that fails validation
+# is silently dropped.
+
+_CHART_TYPES = {
+    "bar", "column", "pie", "line", "area", "radar",
+    "histogram", "scatter", "box", "heatmap", "statcards",
+}
+
+
+def _fmt_num(v: Any) -> str:
+    try:
+        v = float(v)
+    except Exception:  # noqa: BLE001
+        return str(v)
+    if math.isnan(v):
+        return "—"
+    if abs(v) >= 1000:
+        return f"{v:,.0f}"
+    if abs(v) >= 10:
+        return f"{v:.1f}"
+    return f"{v:.2f}"
+
+
+def _tbl(columns: list[dict], rows: list[list], caption: str | None = None) -> dict:
+    out = {"columns": columns, "rows": rows}
+    if caption:
+        out["caption"] = caption
+    return out
+
+
+def _items_table(items, cat="Category", val="Value", effect=False) -> dict:
+    cols = [{"label": cat}, {"label": val, "align": "right"}]
+    if effect:
+        cols.append({"label": "Effect", "align": "right"})
+    rows = []
+    for it in items:
+        disp = it.get("display") or _fmt_num(it.get("value"))
+        row = [str(it.get("label", "")), disp]
+        if effect:
+            s = it.get("sign", 0) or 0
+            row.append("↑ raises" if s > 0 else ("↓ lowers" if s < 0 else "—"))
+        rows.append(row)
+    return _tbl(cols, rows)
+
+
+def _bins_table(bins) -> dict:
+    return _tbl([{"label": "Range"}, {"label": "Count", "align": "right"}],
+                [[b["label"], str(b["count"])] for b in bins])
+
+
+def _boxes_table(boxes) -> dict:
+    cols = [{"label": "Group"}] + [{"label": k, "align": "right"} for k in ("Min", "Q1", "Median", "Q3", "Max")]
+    rows = [[b["label"], _fmt_num(b["min"]), _fmt_num(b["q1"]), _fmt_num(b["med"]), _fmt_num(b["q3"]), _fmt_num(b["max"])]
+            for b in boxes]
+    return _tbl(cols, rows)
+
+
+def _points_table(sc) -> dict:
+    pts = sc.get("points", [])
+    show = pts[:10]
+    cols = [{"label": sc.get("x", "x"), "align": "right"},
+            {"label": sc.get("y", "y"), "align": "right"},
+            {"label": "shade", "align": "right"}]
+    rows = [[f"{p['x']:.2f}", f"{p['y']:.2f}", f"{p['c']:.2f}"] for p in show]
+    cap = f"showing {len(show)} of {len(pts)} points" if len(pts) > len(show) else None
+    return _tbl(cols, rows, cap)
+
+
+def _matrix_table(hm) -> dict:
+    labels, m = hm["labels"], hm["matrix"]
+    cols = [{"label": ""}] + [{"label": l, "align": "right"} for l in labels]
+    rows = [[labels[i]] + [f"{m[i][j]:.2f}" for j in range(len(labels))] for i in range(len(labels))]
+    return _tbl(cols, rows)
+
+
+def _cumulative_table(bars) -> dict:
+    total = sum(b["value"] for b in bars) or 1.0
+    cols = [{"label": "Feature"}, {"label": "Importance", "align": "right"}, {"label": "Cumulative", "align": "right"}]
+    rows, cum = [], 0.0
+    for b in bars:
+        cum += b["value"] / total
+        rows.append([str(b["label"]), f"{b['value']:.2f}", f"{cum * 100:.0f}%"])
+    return _tbl(cols, rows)
+
+
+def _normalize(items, ctype) -> list[dict]:
+    """Scale values to 0..1 (preserving ratios, so pie shares stay correct) while
+    keeping the real number in ``display``."""
+    mx = max((abs(it["value"]) for it in items), default=0.0) or 1.0
+    return [
+        {"label": str(it["label"]),
+         "value": float(max(0.02, min(1.0, abs(it["value"]) / mx))),
+         "display": it.get("display") or _fmt_num(it["value"])}
+        for it in items
+    ]
+
+
+def _corr_heatmap(corr) -> dict | None:
+    labels: list[str] = []
+    for p in corr:
+        for k in (p["a"], p["b"]):
+            if k not in labels:
+                labels.append(k)
+    labels = labels[:8]
+    if len(labels) < 2:
+        return None
+    idx = {l: i for i, l in enumerate(labels)}
+    n = len(labels)
+    m = [[1.0 if i == j else 0.0 for j in range(n)] for i in range(n)]
+    for p in corr:
+        a, b = p["a"], p["b"]
+        if a in idx and b in idx:
+            m[idx[a]][idx[b]] = m[idx[b]][idx[a]] = round(float(p["r"]), 2)
+    return {"labels": labels, "matrix": m}
+
+
+def _card(ctype, title, data, table, note="", axes=None, source=None) -> dict:
+    return {
+        "type": ctype, "title": str(title)[:70], "data": data, "table": table,
+        "note": note, "axes": axes or {}, "source": source or {"kind": "insight"},
+    }
+
+
+def _insight_card(results, ref, ctype, tgt) -> dict | None:
+    """Build a card from an insight the engine already computed (no df needed)."""
+    bars = results.get("bars") or []
+    dist = results.get("dist") or []
+    if ref == "bars" and bars:
+        if ctype == "radar" and len(bars) >= 3:
+            return _card("radar", "Feature importance · radar",
+                         {"items": [{"label": b["label"], "value": b["value"]} for b in bars]},
+                         _items_table(bars, "Feature", "Importance"),
+                         "Radial view of the top drivers — area ≈ overall driver strength.")
+        if ctype in ("pie", "line", "area", "column"):
+            data = {"items": _normalize([{"label": b["label"], "value": b["value"]} for b in bars], ctype)}
+            return _card(ctype, results.get("barsTitle", "Feature importance"), data,
+                         _items_table(bars, "Feature", "Importance"),
+                         f"Relative importance of each driver of {tgt}.")
+        return _card("bar", results.get("barsTitle", "Feature importance"),
+                     {"items": [{"label": b["label"], "value": b["value"], "sign": b.get("sign", 0)} for b in bars]},
+                     _items_table(bars, "Feature", "Importance", effect=any("sign" in b for b in bars)),
+                     f"How strongly each feature moves {tgt}; longer bar = bigger effect.")
+    if ref == "dist" and dist:
+        ct = ctype if ctype in ("column", "bar", "pie", "line", "area") else "column"
+        data = {"items": dist if ct in ("column", "bar") else _normalize(dist, ct)}
+        return _card(ct, results.get("distTitle", "Breakdown"), data,
+                     _items_table(dist, "Segment", "Value"),
+                     f"{results.get('distTitle', 'Breakdown')} across groups.")
+    if ref == "corr":
+        hm = _corr_heatmap(results.get("_corr") or [])
+        if hm:
+            return _card("heatmap", "Correlation between drivers", hm, _matrix_table(hm),
+                         "Pairwise correlation of the top features; darker = stronger (possible redundancy).")
+    if ref == "hist":
+        h = results.get("_hist")
+        if h and h.get("bins"):
+            return _card("histogram", f"{h['feature']} · distribution",
+                         {"feature": h["feature"], "bins": h["bins"]}, _bins_table(h["bins"]),
+                         f"How {h['feature']} is spread across its range — count per bin.",
+                         {"x": h["feature"], "y": "count"})
+    if ref == "scatter":
+        sc = results.get("_scatter")
+        if sc and sc.get("points"):
+            return _card("scatter", f"{sc['x']} vs {sc['y']}", sc, _points_table(sc),
+                         f"Each dot is a record by {sc['x']} and {sc['y']}, shaded by {tgt}.",
+                         {"x": sc.get("x"), "y": sc.get("y")})
+    if ref == "box":
+        bx = results.get("_box")
+        if bx and bx.get("boxes"):
+            return _card("box", f"{bx['feature']} · spread", bx, _boxes_table(bx["boxes"]),
+                         f"Distribution of {bx['feature']} (min · Q1 · median · Q3 · max).",
+                         {"x": bx["feature"]})
+    if ref == "stats":
+        st = results.get("_stats") or []
+        if st:
+            return _card("statcards", "Key statistics",
+                         {"items": [{"label": s["label"], "value": s["value"]} for s in st]},
+                         _tbl([{"label": "Statistic"}, {"label": "Value", "align": "right"}],
+                              [[s["label"], s["value"]] for s in st]),
+                         "Headline numbers describing the data and model at a glance.")
+    return None
+
+
+def _default_cards(results, target, is_clf) -> list[dict]:
+    """A rich, deterministic gallery built purely from engine insights — always
+    available, even with no LLM key."""
+    tgt = target or "the outcome"
+    bars = results.get("bars") or []
+    dist = results.get("dist") or []
+    cards: list[dict] = []
+    if bars:
+        cards.append(_insight_card(results, "bars", "bar", tgt))
+    if dist:
+        cards.append(_insight_card(results, "dist", "column", tgt))
+        cards.append(_card("pie", results.get("distTitle", "Breakdown") + " · share",
+                           {"items": _normalize(dist, "pie")}, _items_table(dist, "Segment", "Share"),
+                           "Each slice is a group's share of the breakdown."))
+        if len(dist) >= 3:
+            cards.append(_card("line", results.get("distTitle", "Breakdown") + " · trend",
+                               {"items": dist}, _items_table(dist, "Segment", "Value"),
+                               "The same breakdown drawn as a trend to reveal its shape."))
+    if len(bars) >= 3:
+        cards.append(_insight_card(results, "bars", "radar", tgt))
+    if len(bars) >= 2:
+        cards.append(_card("area", "Cumulative importance · Pareto",
+                           {"items": [{"label": b["label"], "value": b["value"]} for b in bars]},
+                           _cumulative_table(bars),
+                           "Running share of total importance — how few features explain most of the signal."))
+    for ref in ("corr", "hist", "scatter", "box", "stats"):
+        c = _insight_card(results, ref, ref, tgt)
+        if c:
+            cards.append(c)
+    return [c for c in cards if c]
+
+
+def _llm_cards(df, target, results, specs, is_clf) -> list[dict]:
+    """Execute the LLM's validated chart specs on the REAL dataframe."""
+    cards: list[dict] = []
+    cols = set(df.columns) if df is not None else set()
+    tgt = target or "the outcome"
+    for spec in specs:
+        try:
+            if not isinstance(spec, dict):
+                continue
+            ctype = str(spec.get("type", "")).lower()
+            if ctype not in _CHART_TYPES:
+                continue
+            src = spec.get("source") or {}
+            kind = str(src.get("kind", "")).lower()
+            title = str(spec.get("title") or "").strip()[:70]
+            note = str(spec.get("note") or "").strip()
+            axes = spec.get("axes") if isinstance(spec.get("axes"), dict) else {}
+            if df is None and kind != "insight":
+                continue
+
+            if kind == "insight":
+                card = _insight_card(results, str(src.get("ref", "")).lower(), ctype, tgt)
+                if not card:
+                    continue
+                if title:
+                    card["title"] = title
+                if note:
+                    card["note"] = note
+                cards.append(card)
+                continue
+
+            if kind == "aggregate":
+                gb, of = src.get("groupby"), src.get("of")
+                agg = str(src.get("agg", "mean")).lower()
+                top = max(1, min(12, int(src.get("top") or 8)))
+                if gb not in cols or df[gb].nunique(dropna=True) > max(40, 0.6 * len(df)):
+                    continue
+                if agg == "count":
+                    g = df.groupby(gb).size()
+                elif agg in ("mean", "sum", "median", "min", "max"):
+                    if of not in cols or not pd.api.types.is_numeric_dtype(df[of]):
+                        continue
+                    g = df.groupby(gb)[of].agg(agg)
+                else:
+                    continue
+                g = g.sort_values(ascending=False).head(top)
+                items = [{"label": str(k), "value": float(v), "display": _fmt_num(v)} for k, v in g.items()]
+                if not items:
+                    continue
+                ct = ctype if ctype in ("column", "bar", "pie", "line", "area", "radar") else "column"
+                table = _items_table(items, str(gb), ("count" if agg == "count" else f"{agg} of {of}"))
+                cards.append(_card(ct, title or f"{agg} of {of or 'records'} by {gb}",
+                                   {"items": _normalize(items, ct)}, table, note,
+                                   {"x": str(gb), "y": ("count" if agg == "count" else f"{agg} of {of}")}, src))
+                continue
+
+            if kind == "distribution":
+                col = src.get("column")
+                if col not in cols:
+                    continue
+                if pd.api.types.is_numeric_dtype(df[col]):
+                    s = pd.to_numeric(df[col], errors="coerce").dropna()
+                    if s.nunique() < 2:
+                        continue
+                    nb = max(4, min(12, int(src.get("bins") or 8)))
+                    counts, edges = np.histogram(s, bins=nb)
+                    bins = [{"label": f"{edges[i]:.0f}–{edges[i + 1]:.0f}", "count": int(counts[i])}
+                            for i in range(len(counts))]
+                    cards.append(_card("histogram", title or f"{col} · distribution",
+                                       {"feature": str(col), "bins": bins}, _bins_table(bins), note,
+                                       {"x": str(col), "y": "count"}, src))
+                else:
+                    vc = df[col].astype(str).value_counts(normalize=True).head(8)
+                    items = [{"label": str(k), "value": float(v), "display": f"{v * 100:.0f}%"} for k, v in vc.items()]
+                    if not items:
+                        continue
+                    ct = ctype if ctype in ("column", "bar", "pie", "line", "area") else "column"
+                    cards.append(_card(ct, title or f"{col} · share",
+                                       {"items": _normalize(items, ct)}, _items_table(items, str(col), "Share"),
+                                       note, {"x": str(col), "y": "share"}, src))
+                continue
+
+            if kind == "corr_matrix":
+                want = src.get("columns")
+                num = df.select_dtypes(include="number")
+                if isinstance(want, list) and want:
+                    keep = [c for c in want if c in num.columns]
+                    if keep:
+                        num = num[keep]
+                num = num.iloc[:, :10]
+                if num.shape[1] < 2:
+                    continue
+                cm = num.corr().fillna(0.0)
+                labels = [str(c) for c in cm.columns]
+                matrix = [[round(float(cm.iloc[i, j]), 2) for j in range(len(labels))] for i in range(len(labels))]
+                hm = {"labels": labels, "matrix": matrix}
+                cards.append(_card("heatmap", title or "Correlation matrix", hm, _matrix_table(hm),
+                                   note or "Pairwise correlation across the selected numeric columns.", {}, src))
+                continue
+        except Exception:  # noqa: BLE001
+            continue
+    return cards
+
+
+def build_chart_cards(df, target, results, is_clf, llm_text: str = "") -> list[dict]:
+    """Return the unified ``_charts`` gallery: deterministic insight cards plus any
+    LLM-recommended (context-aware) cards, each carrying chart data + table + note.
+    Every value is computed by the engine — the LLM only picks type/source/title/note."""
+    specs: list = []
+    if llm_text:
+        s, e = llm_text.find("["), llm_text.rfind("]")
+        if s != -1 and e > s:
+            try:
+                parsed = json.loads(llm_text[s:e + 1])
+                if isinstance(parsed, list):
+                    specs = parsed
+            except Exception:  # noqa: BLE001
+                specs = []
+    llm = _llm_cards(df, target, results, specs, is_clf) if specs else []
+    cards = llm + _default_cards(results, target, is_clf)
+    seen, out = set(), []
+    for c in cards:
+        key = (c["type"], c["title"])
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(c)
+    out = out[:14]
+    for i, c in enumerate(out):
+        c["id"] = f"c{i + 1}"
+        c["rank"] = i + 1
+    return out

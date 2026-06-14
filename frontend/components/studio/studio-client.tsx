@@ -25,6 +25,7 @@ import {
   Eye,
   EyeOff,
   Globe,
+  BarChart3,
 } from "lucide-react";
 import { AGENTS, type AgentId, type Agent } from "@/lib/agents";
 import {
@@ -54,6 +55,7 @@ import {
   BoxPlot,
   CumulativeArea,
   LineChart,
+  ChartCard,
 } from "@/components/studio/charts";
 import { KnowledgeGraph3D } from "@/components/studio/knowledge-graph";
 import { Logo } from "@/components/site/logo";
@@ -92,6 +94,7 @@ const LLM_ROLES = [
   { id: "planner", name: "Planner" },
   { id: "coder", name: "Coder" },
   { id: "critic", name: "Critic" },
+  { id: "visualizer", name: "Visualizer" },
   { id: "reporter", name: "Reporter" },
   { id: "researcher", name: "Researcher" },
 ];
@@ -1376,6 +1379,7 @@ const STAGE_IO: Record<AgentId, { in: string; out: string }> = {
   critic: { in: "Traceback from a failure", out: "Patched code → retry" },
   automl: { in: "Cleaned, encoded features", out: "Best model + metrics" },
   explainer: { in: "Trained model", out: "SHAP feature attributions" },
+  visualizer: { in: "Findings + column profile + context", out: "Best-fit charts (type + table + note)" },
   researcher: { in: "Goal + context + drivers", out: "Live web research synthesis" },
   reporter: { in: "Metrics + drivers + insights + research", out: "Business narrative" },
 };
@@ -1646,9 +1650,17 @@ function Results({
   const r = results;
   const [researchOn, setResearchOn] = useState(true);
   const rows = r._rows ?? ds.rows;
+  const srcRows = r._source_rows;
   const tgt = r._target ?? ds.target;
+  const hasCharts = !!(r._charts && r._charts.length);
   const meta: [string, string][] = [];
-  if (rows) meta.push(["rows × cols", `${fmt(rows)} × ${r._cols ?? ds.cols}`]);
+  if (rows)
+    meta.push([
+      "rows × cols",
+      srcRows && srcRows !== rows
+        ? `${fmt(srcRows)} → ${fmt(rows)} sampled × ${r._cols ?? ds.cols}`
+        : `${fmt(rows)} × ${r._cols ?? ds.cols}`,
+    ]);
   meta.push(["task", r.taskLabel]);
   if (tgt && tgt !== "(unsupervised)") meta.push(["target", tgt]);
   if (r._features?.length) meta.push(["features used", String(r._features.length)]);
@@ -1867,6 +1879,29 @@ function Results({
         )}
       </div>
 
+      {/* recommended charts — LLM-chosen, context-aware, each with table + note */}
+      {hasCharts && (
+        <div className="space-y-4">
+          <div className="flex flex-wrap items-center gap-2">
+            <BarChart3 className="h-4 w-4 text-brand" />
+            <h3 className="font-mono text-xs uppercase tracking-[0.16em] text-mute">
+              Recommended charts · chosen for this dataset
+            </h3>
+            <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 font-mono text-[10px] text-mute">
+              {r._charts!.length} · chart + data table + note
+            </span>
+          </div>
+          <div className="grid gap-4 lg:grid-cols-2">
+            {r._charts!.map((c) => (
+              <ChartCard key={c.id} card={c} accent={ds.accent} />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* fixed chart grid — fallback when no recommended charts (mock / sample / no key) */}
+      {!hasCharts && (
+        <>
       {/* bars + dist */}
       <div className="grid gap-4 lg:grid-cols-2">
         <div className="rounded-2xl border border-white/10 bg-panel p-5">
@@ -1974,6 +2009,8 @@ function Results({
             <Scatter data={r._scatter} />
           </div>
         </div>
+      )}
+        </>
       )}
 
       {/* insight graph + driver contribution */}

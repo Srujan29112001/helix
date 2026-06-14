@@ -35,6 +35,7 @@ class RunState(TypedDict, total=False):
     retries: int
     results: Optional[dict[str, Any]]
     research: Optional[dict[str, Any]]
+    charts: Optional[list[dict[str, Any]]]
     emit: Emit
 
 
@@ -166,6 +167,34 @@ async def explainer(state: RunState) -> dict[str, Any]:
     return {}
 
 
+async def visualizer(state: RunState) -> dict[str, Any]:
+    from .analysis import build_chart_cards
+
+    ds, emit = state["dataset"], state["emit"]
+    r = ds["results"]
+    await emit("visualizer", status="active")
+    await emit("visualizer", log={"text": "choosing the best charts for this dataset...", "kind": "muted"})
+    charts = None
+    try:
+        is_clf = "class" in str(ds.get("task", "")).lower()
+        avail = ["bars", "dist"]
+        for key, ref in (("_corr", "corr"), ("_hist", "hist"), ("_scatter", "scatter"), ("_box", "box"), ("_stats", "stats")):
+            if r.get(key):
+                avail.append(ref)
+        vtext = await get_llm("visualizer").acomplete(
+            "visualizer",
+            {"goal": state.get("goal", ""), "context": "", "target": ds.get("target", ""),
+             "dataset": ds, "profile": r.get("_profile", []), "insights": avail},
+        )
+        charts = build_chart_cards(None, ds.get("target", ""), r, is_clf, vtext) or None
+    except Exception:  # noqa: BLE001
+        charts = None
+    if charts:
+        await emit("visualizer", log={"text": f"composed {len(charts)} chart cards (chart + table + note)", "kind": "ok"})
+    await emit("visualizer", status="done")
+    return {"charts": charts}
+
+
 async def researcher(state: RunState) -> dict[str, Any]:
     from .web_search import web_research
 
@@ -209,6 +238,8 @@ async def reporter(state: RunState) -> dict[str, Any]:
     results = dict(base)
     if research:
         results["_research"] = research
+    if state.get("charts"):
+        results["_charts"] = state["charts"]
     results["_report_base"] = list(base["report"])
     results["_recommendation_base"] = base["recommendation"]
     text = await llm.acomplete(
@@ -244,6 +275,7 @@ def build_graph():
         ("critic", critic),
         ("automl", automl),
         ("explainer", explainer),
+        ("visualizer", visualizer),
         ("researcher", researcher),
         ("reporter", reporter),
     ]:
@@ -254,7 +286,8 @@ def build_graph():
     g.add_conditional_edges("executor", route_after_executor, {"critic": "critic", "automl": "automl"})
     g.add_edge("critic", "executor")
     g.add_edge("automl", "explainer")
-    g.add_edge("explainer", "researcher")
+    g.add_edge("explainer", "visualizer")
+    g.add_edge("visualizer", "researcher")
     g.add_edge("researcher", "reporter")
     g.add_edge("reporter", END)
     return g.compile()

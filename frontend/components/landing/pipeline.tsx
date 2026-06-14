@@ -65,6 +65,15 @@ const SNIPPETS: Record<AgentId, { label: string; lines: string[] }> = {
       "feature_4          −0.41",
     ],
   },
+  visualizer: {
+    label: "charts › select",
+    lines: [
+      "choosing best chart per finding…",
+      "  driver impact → bar + table",
+      "  spend by region → column",
+      "✓ 8 charts (chart + table + note)",
+    ],
+  },
   researcher: {
     label: "research › web",
     lines: [

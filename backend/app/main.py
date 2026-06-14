@@ -8,9 +8,10 @@ real LangGraph pipeline behind the same ``/api/run`` contract.
 from __future__ import annotations
 
 import asyncio
-import io
 import json
 import os
+import shutil
+import tempfile
 from pathlib import Path
 
 import pandas as pd
@@ -58,6 +59,38 @@ async def datasets() -> list[dict]:
 
 def _sse(obj: dict) -> str:
     return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n"
+
+
+def _count_data_rows(path: str) -> int:
+    """Cheap streamed newline count (no DataFrame) → approx data-row count."""
+    n = 0
+    with open(path, "rb") as f:
+        while True:
+            chunk = f.read(1 << 20)
+            if not chunk:
+                break
+            n += chunk.count(b"\n")
+    return max(0, n - 1)  # minus header
+
+
+def _read_capped(path: str, max_rows: int = 250_000) -> tuple["pd.DataFrame", int, int]:
+    """Read a CSV, systematically down-sampling huge files so a 3M-row upload never
+    blows up memory. Records the true source size in ``df.attrs`` for transparency."""
+    cols = int(pd.read_csv(path, nrows=0).shape[1])
+    approx = _count_data_rows(path)
+    if approx <= max_rows:
+        df = pd.read_csv(path)
+        df.attrs["source_rows"] = int(len(df))
+        df.attrs["source_cols"] = cols
+        return df, int(len(df)), cols
+    frac = max_rows / approx
+    parts = [chunk.sample(frac=frac, random_state=42)
+             for chunk in pd.read_csv(path, chunksize=100_000)]
+    df = pd.concat(parts, ignore_index=True)
+    df.attrs["source_rows"] = approx
+    df.attrs["source_cols"] = cols
+    df.attrs["read_note"] = f"read-sampled {len(df):,} of ~{approx:,} rows at upload (big-data mode)"
+    return df, approx, cols
 
 
 def _llm_config(llms, provider, model, api_key) -> dict | None:
@@ -190,11 +223,33 @@ async def analyze(
     context: str = Form(""),
     llms: str = Form(""),
 ) -> StreamingResponse:
-    raw = await file.read()
-    df = pd.read_csv(io.BytesIO(raw))
+    filename = file.filename or "uploaded.csv"
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as tmp:
+            shutil.copyfileobj(file.file, tmp)
+            tmp_path = tmp.name
+        df, _src_rows, _src_cols = _read_capped(tmp_path)
+    except Exception as exc:  # noqa: BLE001
+        err = str(exc)
+
+        async def _err_stream():
+            yield _sse({"t": "start", "dataset": filename})
+            yield _sse({"t": "event", "stage": "planner", "status": "error",
+                        "log": {"text": "could not read CSV: " + err, "kind": "err"}})
+            yield _sse({"t": "done"})
+
+        return StreamingResponse(_err_stream(), media_type="text/event-stream", headers=_SSE_HEADERS)
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
     return StreamingResponse(
         _analyze_stream(
-            df, target, goal, task, file.filename or "uploaded.csv", provider, model, apiKey, e2bKey, context, llms
+            df, target, goal, task, filename, provider, model, apiKey, e2bKey, context, llms
         ),
         media_type="text/event-stream",
         headers=_SSE_HEADERS,

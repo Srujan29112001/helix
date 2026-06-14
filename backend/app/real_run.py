@@ -15,7 +15,7 @@ from typing import Any, Awaitable, Callable
 
 import pandas as pd
 
-from .analysis import analyze_dataframe, clean
+from .analysis import analyze_dataframe, build_chart_cards, clean, _is_classification
 from .llm import get_llm
 from .rag import retrieve
 from .sandbox import execute_code, strip_code_fences
@@ -180,6 +180,42 @@ async def run_real(
         await emit("explainer", log={"text": "  " + str(b["label"]).ljust(18) + " " + sign + str(round(b["value"], 2)), "kind": "code"})
     await emit("explainer", log={"text": "explanations ready", "kind": "ok"})
     await emit("explainer", status="done")
+
+    # ── Visualizer: LLM picks the best charts; the engine fills real data ─
+    await emit("visualizer", status="active")
+    await emit("visualizer", log={"text": "choosing the best charts for this dataset...", "kind": "muted"})
+    try:
+        if task == "clustering" or not target:
+            clean_df, is_clf = df, False
+        else:
+            clean_df, _ = clean(df, target)
+            is_clf = _is_classification(clean_df[target]) if target in clean_df.columns else False
+        avail = [ref for key, ref in (
+            ("_corr", "corr"), ("_hist", "hist"), ("_scatter", "scatter"), ("_box", "box"),
+        ) if results.get(key)]
+        if results.get("bars"):
+            avail.append("bars")
+        if results.get("dist"):
+            avail.append("dist")
+        if results.get("_stats"):
+            avail.append("stats")
+        vtext = await get_llm("visualizer").acomplete(
+            "visualizer",
+            {"goal": goal, "context": context, "target": target, "dataset": ds_info,
+             "profile": results.get("_profile", []), "insights": avail},
+        )
+        cards = await loop.run_in_executor(
+            None, lambda: build_chart_cards(clean_df, target, results, is_clf, vtext)
+        )
+        results["_charts"] = cards or None
+        if cards:
+            for c in cards[:6]:
+                await emit("visualizer", log={"text": f"  {str(c['type']).ljust(9)} · {c['title']}", "kind": "code"})
+            await emit("visualizer", log={"text": f"composed {len(cards)} chart cards (chart + table + note)", "kind": "ok"})
+    except Exception as exc:  # noqa: BLE001
+        results["_charts"] = None
+        await emit("visualizer", log={"text": "chart selection skipped: " + str(exc), "kind": "warn"})
+    await emit("visualizer", status="done")
 
     # ── Researcher: live web research for domain context ─────────────────
     await emit("researcher", status="active")

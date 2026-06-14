@@ -47,6 +47,70 @@ export interface GraphLink {
   sign?: number;
 }
 
+export type ChartType =
+  | "bar"
+  | "column"
+  | "pie"
+  | "line"
+  | "area"
+  | "radar"
+  | "histogram"
+  | "scatter"
+  | "box"
+  | "heatmap"
+  | "statcards";
+
+export interface ChartColumn {
+  label: string;
+  align?: "left" | "right";
+}
+
+export interface ChartTable {
+  columns: ChartColumn[];
+  rows: (string | number)[][];
+  caption?: string;
+}
+
+export interface ChartAxes {
+  x?: string;
+  y?: string;
+  series?: string;
+  unit?: string;
+}
+
+/** Data payload for a chart card — only the keys relevant to its `type` are set. */
+export interface ChartCardData {
+  items?: { label: string; value: number; display?: string; sign?: number }[];
+  bins?: { label: string; count: number }[];
+  feature?: string;
+  x?: string;
+  y?: string;
+  points?: { x: number; y: number; c: number }[];
+  legend?: { low: string; high: string };
+  boxes?: {
+    label: string;
+    min: number;
+    q1: number;
+    med: number;
+    q3: number;
+    max: number;
+  }[];
+  labels?: string[];
+  matrix?: number[][];
+}
+
+export interface ChartCard {
+  id: string;
+  rank: number;
+  title: string;
+  type: ChartType;
+  note: string;
+  source?: Record<string, unknown>;
+  axes?: ChartAxes;
+  data: ChartCardData;
+  table: ChartTable;
+}
+
 export interface RunResults {
   taskLabel: string;
   bestModel: string;
@@ -84,6 +148,9 @@ export interface RunResults {
     boxes: { label: string; min: number; q1: number; med: number; q3: number; max: number }[];
   } | null;
   _insights_text?: { text: string; kind: string }[];
+  _charts?: ChartCard[] | null;
+  _source_rows?: number;
+  _source_cols?: number;
   _research?: {
     queries: string[];
     hits: { title: string; snippet: string; url: string }[];
