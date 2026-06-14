@@ -94,15 +94,18 @@ def analyze_dataframe(
     if target not in df.columns:
         raise ValueError(f"target column '{target}' not found in dataset")
 
-    # sample very large data BEFORE cleaning, so clean()'s copy stays small
-    if len(df) > 30000:
-        df = df.sample(30000, random_state=42)
+    # Use as much data as a compute budget allows, scaled to dataset WIDTH:
+    # narrow tables train on hundreds of thousands of rows (gradient boosting
+    # handles that in seconds), wide tables use fewer so memory/time stay sane.
+    row_cap = int(min(500_000, max(50_000, 10_000_000 // max(1, df.shape[1]))))
+    if len(df) > row_cap:
+        df = df.sample(row_cap, random_state=42)
 
     df, fixes = clean(df, target)
     if read_note:
         fixes.insert(0, read_note)
-    if src_rows > 30000:
-        fixes.append(f"sampled 30,000 of {src_rows:,} rows for a fast run")
+    if src_rows > len(df):
+        fixes.append(f"trained on {len(df):,} of {src_rows:,} rows (scaled to dataset width)")
 
     y_raw = df[target]
     is_clf = _is_classification(y_raw) if task in ("auto", "nlp") else (task == "classification")
@@ -197,15 +200,22 @@ def analyze_dataframe(
         metric = ("roc_auc" if binary else "accuracy") if is_clf else "r2"
         # cap parallelism on big data so 16GB hosts don't blow up on all cores
         big = len(X_train) * max(1, X.shape[1]) > 4_000_000
+        # give the search more time on bigger data; restrict to fast histogram
+        # learners (LightGBM/XGBoost) once N is large so the budget isn't wasted.
+        eff_budget = int(min(75, max(time_budget, len(X_train) // 12_000)))
+        fit_kwargs = {}
+        if len(X_train) > 100_000:
+            fit_kwargs["estimator_list"] = ["lgbm", "xgboost"]
         automl.fit(
             X_train,
             y_train,
             task="classification" if is_clf else "regression",
-            time_budget=time_budget,
+            time_budget=eff_budget,
             metric=metric,
             verbose=0,
             early_stop=True,
             n_jobs=4 if big else -1,
+            **fit_kwargs,
         )
         model = automl.model.estimator
         best_model = {
@@ -242,6 +252,7 @@ def analyze_dataframe(
         best_model = "HistGradientBoosting"
 
     metrics, headline, task_label = _score(is_clf, binary, y_test, preds, proba)
+    verdict = _model_quality(is_clf, binary, headline, y)
     bars, bars_title = _importance(model, X, X_test, y_test, y, features, is_clf)
     if text_terms:  # NLP: surface themes instead of opaque TF-IDF dims
         bars = [{"label": t, "value": v} for t, v in text_terms]
@@ -283,6 +294,7 @@ def analyze_dataframe(
         "_source_rows": src_rows,
         "_source_cols": src_cols,
         "_metric": opt_metric,
+        "_verdict": verdict,
         "_drivers": [
             {"feature": b["label"], "importance": round(b["value"], 2), "direction": b.get("sign", 0)}
             for b in bars[:4]
@@ -340,6 +352,72 @@ def _score(is_clf, binary, y_test, preds, proba):
         {"label": "MAPE", "value": f"{mape:.1f}%" if not math.isnan(mape) else "—"},
     ]
     return metrics, {"fraction": float(max(0, min(1, r2))), "value": f"{r2:.2f}", "label": "R2 score"}, "Regression"
+
+
+def _model_quality(is_clf, binary, headline, y) -> dict:
+    """A plain-English verdict on how much signal the model actually found, so a
+    near-chance result explains itself instead of just looking broken."""
+    frac = float(headline.get("fraction", 0) or 0)
+    label = headline.get("label", "")
+    if is_clf and "ROC-AUC" in label:
+        score = frac  # 0.50 = random guessing, 1.0 = perfect
+        if score >= 0.85:
+            lvl, name = "excellent", "Strong predictive signal"
+        elif score >= 0.72:
+            lvl, name = "good", "Solid predictive signal"
+        elif score >= 0.6:
+            lvl, name = "fair", "Moderate signal"
+        else:
+            lvl, name = "weak", "Near-chance — weak signal"
+        detail = f"ROC-AUC {frac:.2f} (0.50 = random guessing). " + (
+            "The features predict the target reliably."
+            if score >= 0.72
+            else "Beats chance, but only modestly."
+            if score >= 0.6
+            else "The target looks weakly related to the available features — the data may lack "
+            "predictive signal, or need richer/engineered features or a different target."
+        )
+    elif is_clf:
+        try:
+            base = float(pd.Series(y).value_counts(normalize=True).max())
+        except Exception:  # noqa: BLE001
+            base = 0.5
+        lift = frac - base
+        if lift >= 0.2:
+            lvl, name = "excellent", "Strong predictive signal"
+        elif lift >= 0.1:
+            lvl, name = "good", "Solid predictive signal"
+        elif lift >= 0.03:
+            lvl, name = "fair", "Moderate signal"
+        else:
+            lvl, name = "weak", "Near-chance — weak signal"
+        detail = f"Accuracy {frac:.2f} vs a {base:.2f} majority-class baseline. " + (
+            "Clear lift over always guessing the majority class."
+            if lift >= 0.1
+            else "Modest lift over the baseline."
+            if lift >= 0.03
+            else "Barely beats always guessing the majority class — the features carry little "
+            "signal for this target."
+        )
+    else:  # regression R²
+        r2 = frac
+        if r2 >= 0.75:
+            lvl, name = "excellent", "Strong predictive signal"
+        elif r2 >= 0.5:
+            lvl, name = "good", "Solid predictive signal"
+        elif r2 >= 0.25:
+            lvl, name = "fair", "Moderate signal"
+        else:
+            lvl, name = "weak", "Near-chance — weak signal"
+        detail = f"R² {frac:.2f} (1.0 = perfect, 0 = no better than predicting the mean). " + (
+            "The features explain most of the variation."
+            if r2 >= 0.5
+            else "The features explain some of the variation."
+            if r2 >= 0.25
+            else "The features explain little of the variation — the data may lack predictive "
+            "signal or need better features."
+        )
+    return {"level": lvl, "label": name, "detail": detail}
 
 
 def _importance(model, X, X_test, y_test, y, features, is_clf):
@@ -773,6 +851,23 @@ def _cluster(df: pd.DataFrame, src_rows: int | None = None, src_cols: int | None
     bars = [{"label": str(c), "value": float(max(0.08, sep[c] / mx))} for c in order]
     second = order[1] if len(order) > 1 else order[0]
 
+    if best_sil >= 0.5:
+        _clvl, _cname = "excellent", "Well-separated segments"
+    elif best_sil >= 0.35:
+        _clvl, _cname = "good", "Reasonably distinct segments"
+    elif best_sil >= 0.2:
+        _clvl, _cname = "fair", "Overlapping segments"
+    else:
+        _clvl, _cname = "weak", "Weak segmentation"
+    verdict = {
+        "level": _clvl, "label": _cname,
+        "detail": f"Silhouette {best_sil:.2f} (1.0 = perfectly separated, 0 = overlapping). " + (
+            "The segments are distinct and actionable." if best_sil >= 0.35
+            else "The segments overlap noticeably — treat the boundaries as soft." if best_sil >= 0.2
+            else "The data does not split into clean clusters — segments are mostly arbitrary."
+        ),
+    }
+
     return {
         "taskLabel": "Clustering",
         "bestModel": f"KMeans (k={best_k})",
@@ -799,6 +894,7 @@ def _cluster(df: pd.DataFrame, src_rows: int | None = None, src_cols: int | None
         "_cols": int(df.shape[1]),
         "_source_rows": int(src_rows or len(df)),
         "_source_cols": int(src_cols or df.shape[1]),
+        "_verdict": verdict,
         "_drivers": [{"feature": b["label"], "importance": round(b["value"], 2), "direction": 0} for b in bars[:4]],
     }
 

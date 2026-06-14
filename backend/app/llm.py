@@ -83,7 +83,9 @@ _SYSTEM = {
         "(1) an executive summary of what was predicted and how reliable it is; (2) the strongest drivers and the "
         "business meaning of each direction; (3) what the segment/breakdown pattern reveals, with the actual rates; "
         "(4) notable correlations and what they imply; (5) data quality and the automated observations provided; "
-        "(6) the risks, caveats and limits of the model. Then a final paragraph starting with 'Recommendation:' "
+        "(6) the risks, caveats and limits of the model — and if the model-quality verdict indicates weak or "
+        "near-chance signal, say so honestly and explain the target is hard to predict from these features rather "
+        "than overclaiming. Then a final paragraph starting with 'Recommendation:' "
         "giving 2-3 concrete, prioritised actions. Be specific and quantitative, never generic. No markdown, no "
         "bullet points, no headings."
     ),
@@ -204,6 +206,7 @@ def _build_user_prompt(role: str, context: dict[str, Any]) -> str:
         )
     if role == "reporter":
         return head + (
+            f"Model-quality verdict: {context.get('verdict','')}\n"
             f"Metrics (held-out test set): {context.get('metrics','')}\n"
             f"Key drivers (most to least important; sign = effect direction): {context.get('drivers','')}\n"
             f"Breakdown — {context.get('breakdown','')}\n"

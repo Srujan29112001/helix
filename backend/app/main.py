@@ -73,7 +73,7 @@ def _count_data_rows(path: str) -> int:
     return max(0, n - 1)  # minus header
 
 
-def _read_capped(path: str, max_rows: int = 250_000) -> tuple["pd.DataFrame", int, int]:
+def _read_capped(path: str, max_rows: int = 500_000) -> tuple["pd.DataFrame", int, int]:
     """Read a CSV, systematically down-sampling huge files so a 3M-row upload never
     blows up memory. Records the true source size in ``df.attrs`` for transparency."""
     cols = int(pd.read_csv(path, nrows=0).shape[1])

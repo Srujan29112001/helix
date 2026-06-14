@@ -26,6 +26,8 @@ import {
   EyeOff,
   Globe,
   BarChart3,
+  Gauge,
+  FileText,
 } from "lucide-react";
 import { AGENTS, type AgentId, type Agent } from "@/lib/agents";
 import {
@@ -172,6 +174,13 @@ const initialStatuses = () =>
     AgentId,
     StageStatus
   >;
+
+const VERDICT_STYLE: Record<string, { color: string; ring: string; tag: string }> = {
+  excellent: { color: "#9ae64a", ring: "rgba(154,230,74,0.30)", tag: "Excellent" },
+  good: { color: "#25d7f0", ring: "rgba(37,215,240,0.30)", tag: "Good" },
+  fair: { color: "#fbbf24", ring: "rgba(251,191,36,0.30)", tag: "Fair" },
+  weak: { color: "#fb7185", ring: "rgba(251,113,133,0.30)", tag: "Weak signal" },
+};
 
 const LOG_COLOR: Record<LogKind, string> = {
   info: "text-mist",
@@ -1690,8 +1699,38 @@ function Results({
   const reportParas = researchOn ? r.report : r._report_base ?? r.report;
   const rec = researchOn ? r.recommendation : r._recommendation_base ?? r.recommendation;
 
+  const verdict = r._verdict;
+  const vs = verdict ? VERDICT_STYLE[verdict.level] ?? VERDICT_STYLE.fair : null;
+
   return (
     <div className="space-y-4">
+      {/* model-quality verdict — frames the result honestly (esp. weak signal) */}
+      {verdict && vs && (
+        <div
+          className="flex items-start gap-3 rounded-2xl border p-4"
+          style={{ borderColor: vs.ring, background: alpha(vs.color, 0.06) }}
+        >
+          <span
+            className="mt-0.5 grid h-8 w-8 shrink-0 place-items-center rounded-lg"
+            style={{ background: alpha(vs.color, 0.16), color: vs.color }}
+          >
+            <Gauge className="h-4.5 w-4.5" />
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-sm font-semibold text-white">Model quality · {verdict.label}</span>
+              <span
+                className="rounded-full px-2 py-0.5 font-mono text-[9px] uppercase tracking-wider"
+                style={{ color: vs.color, background: alpha(vs.color, 0.14) }}
+              >
+                {vs.tag}
+              </span>
+            </div>
+            <p className="mt-1 text-[13px] leading-relaxed text-mute">{verdict.detail}</p>
+          </div>
+        </div>
+      )}
+
       {/* web research comparison toggle */}
       {r._research && (
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-acid/25 bg-acid/[0.04] p-4">
@@ -2100,17 +2139,30 @@ function Results({
         </div>
       )}
 
-      {/* report */}
-      <div className="rounded-2xl border border-white/10 bg-panel p-6">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <h3 className="font-mono text-xs uppercase tracking-[0.16em] text-mute">
-              Business report
-            </h3>
+      {/* business report — premium, scannable layout */}
+      <div className="overflow-hidden rounded-2xl border border-white/10 bg-panel">
+        {/* header band */}
+        <div
+          className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 px-6 py-4"
+          style={{ background: `linear-gradient(90deg, ${alpha(ds.accent, 0.1)}, transparent)` }}
+        >
+          <div className="flex items-center gap-2.5">
+            <span
+              className="grid h-8 w-8 place-items-center rounded-lg"
+              style={{ background: alpha(ds.accent, 0.16), color: ds.accent }}
+            >
+              <FileText className="h-4.5 w-4.5" />
+            </span>
+            <div>
+              <h3 className="text-sm font-semibold text-white">Business report</h3>
+              <div className="font-mono text-[10px] uppercase tracking-wider text-mute">
+                executive findings &amp; actions
+              </div>
+            </div>
             {r._research && (
               <span
                 className={cn(
-                  "rounded-full px-2 py-0.5 font-mono text-[9px]",
+                  "ml-1 rounded-full px-2 py-0.5 font-mono text-[9px]",
                   researchOn ? "bg-acid/15 text-acid" : "bg-white/5 text-mute",
                 )}
               >
@@ -2123,29 +2175,61 @@ function Results({
             Download
           </Button>
         </div>
-        <div className="mt-4 space-y-3">
-          {reportParas.map((p, i) => (
-            <p key={i} className="text-sm leading-relaxed text-mist">
-              {p}
-            </p>
+
+        {/* report meta strip */}
+        <div className="flex flex-wrap gap-2 border-b border-white/10 px-6 py-3">
+          {[
+            ["model", r.bestModel],
+            [r.headline.label, r.headline.value],
+            ...(verdict ? [["quality", verdict.label] as [string, string]] : []),
+            ["trained on", `${fmt(rows)}${srcRows && srcRows !== rows ? ` / ${fmt(srcRows)}` : ""} rows`],
+          ].map(([k, v]) => (
+            <span key={k} className="rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1">
+              <span className="font-mono text-[10px] uppercase tracking-wider text-mute">{k}: </span>
+              <span className="text-xs text-mist">{v}</span>
+            </span>
           ))}
         </div>
-        <div
-          className="mt-5 flex items-start gap-3 rounded-xl border p-4"
-          style={{
-            borderColor: alpha(ds.accent, 0.3),
-            background: alpha(ds.accent, 0.06),
-          }}
-        >
-          <ArrowRight
-            className="mt-0.5 h-4 w-4 shrink-0"
-            style={{ color: ds.accent }}
-          />
-          <div>
-            <div className="font-mono text-[10px] uppercase tracking-wider text-mute">
-              Recommendation
+
+        {/* narrative */}
+        <div className="px-6 py-5">
+          {reportParas.length > 0 && (
+            <p
+              className="border-l-2 pl-4 text-[15px] leading-relaxed text-white"
+              style={{ borderColor: ds.accent }}
+            >
+              {reportParas[0]}
+            </p>
+          )}
+          <div className="mt-4 space-y-3.5">
+            {reportParas.slice(1).map((p, i) => (
+              <div key={i} className="flex gap-3">
+                <span
+                  className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full"
+                  style={{ background: alpha(ds.accent, 0.7) }}
+                />
+                <p className="max-w-prose text-[13.5px] leading-relaxed text-mist">{p}</p>
+              </div>
+            ))}
+          </div>
+
+          {/* recommendation callout */}
+          <div
+            className="mt-6 flex items-start gap-3 rounded-xl border p-4"
+            style={{ borderColor: alpha(ds.accent, 0.35), background: alpha(ds.accent, 0.07) }}
+          >
+            <span
+              className="grid h-7 w-7 shrink-0 place-items-center rounded-lg"
+              style={{ background: alpha(ds.accent, 0.16), color: ds.accent }}
+            >
+              <ArrowRight className="h-4 w-4" />
+            </span>
+            <div>
+              <div className="font-mono text-[10px] uppercase tracking-wider text-mute">
+                Recommendation
+              </div>
+              <p className="mt-1 text-sm font-medium leading-relaxed text-white">{rec}</p>
             </div>
-            <p className="mt-1 text-sm leading-relaxed text-white">{rec}</p>
           </div>
         </div>
       </div>

@@ -149,6 +149,7 @@ export interface RunResults {
   } | null;
   _insights_text?: { text: string; kind: string }[];
   _charts?: ChartCard[] | null;
+  _verdict?: { level: "excellent" | "good" | "fair" | "weak"; label: string; detail: string } | null;
   _source_rows?: number;
   _source_cols?: number;
   _research?: {

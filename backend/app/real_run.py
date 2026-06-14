@@ -147,8 +147,16 @@ async def run_real(
     for f in fixes[:4]:
         await emit("executor", log={"text": "auto-clean: " + f, "kind": "muted"})
 
-    await emit("executor", log={"text": "training models (FLAML AutoML, ~20s)...", "kind": "muted"})
-    results = await loop.run_in_executor(None, lambda: analyze_dataframe(df, target, task, time_budget))
+    await emit("executor", log={"text": "training models (FLAML AutoML, scaled to data size)...", "kind": "muted"})
+    # run training off-thread and heartbeat every few seconds so big-data fits
+    # (which can run a minute+) never trip an idle-connection timeout.
+    fit_task = loop.run_in_executor(None, lambda: analyze_dataframe(df, target, task, time_budget))
+    waited = 0
+    while not fit_task.done():
+        await asyncio.sleep(5)
+        waited += 5
+        await emit("executor", log={"text": f"  …model search in progress ({waited}s)", "kind": "muted"})
+    results = await fit_task
     tr, te = results.get("_train_rows"), results.get("_test_rows")
     if tr and te:
         await emit("executor", log={"text": f"train/test split: {tr:,} train / {te:,} test (80/20)", "kind": "info"})
@@ -168,6 +176,10 @@ async def run_real(
     for m in results.get("metrics", []):
         await _p(0.16)
         await emit("automl", log={"text": "  " + str(m["label"]).ljust(12) + " " + str(m["value"]), "kind": "code"})
+    v = results.get("_verdict")
+    if v:
+        vkind = "ok" if v["level"] in ("excellent", "good") else ("warn" if v["level"] == "weak" else "info")
+        await emit("automl", log={"text": f"model quality: {v['label']} — {v['detail']}", "kind": vkind})
     await emit("automl", status="done")
 
     # ── Explainer ────────────────────────────────────────────────────────
@@ -265,6 +277,7 @@ async def run_real(
     common = {
         "dataset": ds_info, "drivers": drivers, "metrics": metrics, "breakdown": breakdown,
         "stats": stats, "correlations": corr, "quality": quality, "smart": smart,
+        "verdict": (results.get("_verdict") or {}).get("detail", ""),
     }
     orig_report = list(results["report"])
     orig_rec = results["recommendation"]
