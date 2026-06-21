@@ -2375,7 +2375,7 @@ function Results({
               const ts = r._km!.map((p) => p.t);
               const tlo = Math.min(...ts), thi = Math.max(...ts);
               const pts = r._km!.map((p) => ({ x: thi > tlo ? (p.t - tlo) / (thi - tlo) : 0.5, y: p.s }));
-              return <Curve points={pts} xlabel={`time (${tlo.toFixed(0)}–${thi.toFixed(0)})`} ylabel="survival probability" accent={ds.accent} />;
+              return <Curve points={pts} xlabel="time" ylabel="survival probability" accent={ds.accent} xDomain={[tlo, thi]} />;
             })()}
           </div>
           <p className="mt-1 text-center font-mono text-[9px] text-mute">probability of &quot;surviving&quot; (no event yet) as time increases</p>

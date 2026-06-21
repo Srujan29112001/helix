@@ -1119,6 +1119,8 @@ def _insights(df, X, y, target, bars, dist, is_clf, features) -> dict[str, Any]:
                     {"x": round(float(px), 3), "y": round(float(py), 3), "c": float(pc)}
                     for px, py, pc in zip(_nz(sdf[fx]), _nz(sdf[fy]), tcol)
                 ],
+                "xr": [round(float(sdf[fx].min()), 3), round(float(sdf[fx].max()), 3)],
+                "yr": [round(float(sdf[fy].min()), 3), round(float(sdf[fy].max()), 3)],
             }
     except Exception:  # noqa: BLE001
         out["_scatter"] = None
@@ -1449,7 +1451,9 @@ def _anomaly(df: pd.DataFrame, src_rows=None, src_cols=None) -> dict[str, Any]:
         scatter = {"x": fx, "y": fy,
                    "points": [{"x": round(float(a), 3), "y": round(float(b), 3), "c": float(c)}
                               for a, b, c in zip(_nz(sdf[fx]), _nz(sdf[fy]), sdf["_a"])],
-                   "legend": {"low": "normal", "high": "anomaly"}}
+                   "legend": {"low": "normal", "high": "anomaly"},
+                   "xr": [round(float(sdf[fx].min()), 3), round(float(sdf[fx].max()), 3)],
+                   "yr": [round(float(sdf[fy].min()), 3), round(float(sdf[fy].max()), 3)]}
     counts, edges = np.histogram(scores, bins=8)
     hist = {"feature": "anomaly score",
             "bins": [{"label": f"{edges[i]:.2f}–{edges[i + 1]:.2f}", "count": int(counts[i])} for i in range(len(counts))]}
@@ -1522,7 +1526,9 @@ def _dimreduction(df: pd.DataFrame, target: str, src_rows=None, src_cols=None) -
         idx = np.random.RandomState(42).choice(len(idx), 180, replace=False)
     pts = [{"x": round(float(px.iloc[i]), 3), "y": round(float(py.iloc[i]), 3),
             "c": float(color.iloc[i]) if color is not None else 0.4} for i in idx]
-    scatter = {"x": "PC1", "y": "PC2", "points": pts}
+    scatter = {"x": "PC1", "y": "PC2", "points": pts,
+               "xr": [round(float(proj[:, 0].min()), 3), round(float(proj[:, 0].max()), 3)],
+               "yr": [round(float(proj[:, 1].min()), 3), round(float(proj[:, 1].max()), 3)]}
     if legend:
         scatter["legend"] = legend
     load = np.abs(pca.components_[0])

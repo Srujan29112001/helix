@@ -87,6 +87,8 @@ export interface ChartCardData {
   y?: string;
   points?: { x: number; y: number; c: number }[];
   legend?: { low: string; high: string };
+  xr?: [number, number];
+  yr?: [number, number];
   boxes?: {
     label: string;
     min: number;
@@ -140,6 +142,8 @@ export interface RunResults {
     y: string;
     points: { x: number; y: number; c: number }[];
     legend?: { low: string; high: string };
+    xr?: [number, number];
+    yr?: [number, number];
   } | null;
   _profile?: { name: string; type: string; missing: number; unique: number }[];
   _quality?: { score: number; missing: number; duplicates: number; constant_cols: number } | null;
