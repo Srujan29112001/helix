@@ -214,6 +214,13 @@ async def run_real(
         eff = "raises" if sign > 0 else ("lowers" if sign < 0 else "")
         await _p(0.1)
         await emit("explainer", log={"text": "  " + str(b["label"]).ljust(18) + " " + f"{b['value']:.2f}".ljust(10) + " " + eff, "kind": "code"})
+    st_tests = results.get("_stats_tests") or []
+    if st_tests:
+        await emit("explainer", log={"text": "statistical tests (feature ~ target):", "kind": "muted"})
+        for t in st_tests[:8]:
+            pv = "<0.001" if t["p"] < 0.001 else f"{t['p']:.3f}"
+            tag = "sig" if t["significant"] else "n.s."
+            await emit("explainer", log={"text": "  " + str(t["feature"])[:18].ljust(18) + " " + str(t["test"]).ljust(14) + " p=" + pv + " [" + tag + "]", "kind": "code"})
     await emit("explainer", log={"text": f"explanations ready ({len(results['bars'])} features ranked)", "kind": "ok"})
     await emit("explainer", status="done")
 
@@ -312,6 +319,7 @@ async def run_real(
         "dataset": ds_info, "drivers": drivers, "metrics": metrics, "breakdown": breakdown,
         "stats": stats, "correlations": corr, "quality": quality, "smart": smart,
         "verdict": (results.get("_verdict") or {}).get("detail", ""),
+        "sigtests": "; ".join(t["interpretation"] for t in (results.get("_stats_tests") or [])[:5]),
     }
     orig_report = list(results["report"])
     orig_rec = results["recommendation"]

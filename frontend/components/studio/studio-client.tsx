@@ -30,6 +30,7 @@ import {
   FileText,
   Network,
   ChevronRight,
+  Sigma,
 } from "lucide-react";
 import { AGENTS, type AgentId, type Agent } from "@/lib/agents";
 import {
@@ -2010,6 +2011,63 @@ function Results({
             Key statistics
           </h3>
           <StatCards stats={r._stats} />
+        </div>
+      )}
+
+      {/* statistical significance — hypothesis tests per feature vs target */}
+      {r._stats_tests && r._stats_tests.length > 0 && (
+        <div className="rounded-2xl border border-white/10 bg-panel p-6">
+          <div className="mb-1 flex flex-wrap items-center gap-2">
+            <Sigma className="h-4 w-4 text-brand" />
+            <h3 className="font-mono text-xs uppercase tracking-[0.16em] text-mute">
+              Statistical significance · hypothesis tests
+            </h3>
+            <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 font-mono text-[10px] text-mute">
+              {r._stats_tests.filter((t) => t.significant).length}/{r._stats_tests.length} significant
+            </span>
+          </div>
+          <p className="mb-3 font-mono text-[10px] leading-relaxed text-mute">
+            Is each feature&apos;s link to {tgt} real or chance? p &lt; 0.05 = unlikely to be chance.
+          </p>
+          <div className="scroll-thin max-h-80 overflow-auto rounded-lg border border-white/10 bg-white/[0.02]">
+            <table className="w-full text-left text-xs">
+              <thead className="sticky top-0 bg-panel">
+                <tr className="font-mono text-[10px] uppercase tracking-wider text-mute">
+                  <th className="px-3 py-2">Feature</th>
+                  <th className="px-3 py-2">Test</th>
+                  <th className="px-3 py-2 text-right">p-value</th>
+                  <th className="px-3 py-2 text-right">Effect</th>
+                  <th className="px-3 py-2 text-center">Verdict</th>
+                </tr>
+              </thead>
+              <tbody>
+                {r._stats_tests.map((t, i) => (
+                  <tr key={i} className="border-t border-white/5">
+                    <td className="max-w-[160px] truncate px-3 py-1.5 text-mist" title={t.feature}>
+                      {t.feature}
+                    </td>
+                    <td className="px-3 py-1.5 font-mono text-[11px] text-mute">{t.test}</td>
+                    <td className="px-3 py-1.5 text-right font-mono text-mute">
+                      {t.p < 0.001 ? "<0.001" : t.p.toFixed(3)}
+                    </td>
+                    <td className="px-3 py-1.5 text-right font-mono text-mute">
+                      {t.effect ? `${t.effect_name} ${t.effect}` : "—"}
+                    </td>
+                    <td className="px-3 py-1.5 text-center">
+                      <span
+                        className={cn(
+                          "rounded-full px-2 py-0.5 font-mono text-[9px]",
+                          t.significant ? "bg-acid/15 text-acid" : "bg-white/5 text-mute",
+                        )}
+                      >
+                        {t.significant ? "significant" : "n.s."}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 

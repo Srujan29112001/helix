@@ -148,6 +148,16 @@ export interface RunResults {
     boxes: { label: string; min: number; q1: number; med: number; q3: number; max: number }[];
   } | null;
   _insights_text?: { text: string; kind: string }[];
+  _stats_tests?: {
+    feature: string;
+    test: string;
+    p: number;
+    stat: number;
+    effect: number;
+    effect_name: string;
+    significant: boolean;
+    interpretation: string;
+  }[];
   _charts?: ChartCard[] | null;
   _verdict?: { level: "excellent" | "good" | "fair" | "weak"; label: string; detail: string } | null;
   _source_rows?: number;

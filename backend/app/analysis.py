@@ -286,6 +286,7 @@ def analyze_dataframe(
         target, task_label, headline, bars, dist, dist_title
     )
     insights = _insights(df, X, y, target, bars, dist, is_clf, features)
+    stats_tests = _statistics(df, target, is_clf, bars)
     if insights.get("_scatter"):
         if is_clf and len(classes) >= 2:
             low = f"{target} = {classes[0]}"
@@ -330,7 +331,134 @@ def analyze_dataframe(
         "_quality": insights["_quality"],
         "_box": insights["_box"],
         "_insights_text": insights["_insights_text"],
+        "_stats_tests": stats_tests,
     }
+
+
+def _statistics(df, target, is_clf, bars) -> list[dict]:
+    """Real statistical-inference layer: for each top feature vs the target, pick
+    the right hypothesis test, compute the p-value + an effect size, and write a
+    plain-English verdict. This is what separates a model-fitter from a data
+    scientist — significance, not just importance.
+
+    Tests chosen by dtype combination:
+      classification target, numeric feature  -> Welch t-test (2 groups) / one-way ANOVA (>2)
+                            with Shapiro normality check -> Mann-Whitney / Kruskal if non-normal
+      classification target, categorical feat -> chi-square test of independence (+ Cramér's V)
+      regression target, numeric feature       -> Pearson + Spearman correlation (+ p-values)
+      regression target, categorical feature   -> one-way ANOVA (target across categories, eta²)
+    """
+    if not target or target not in df.columns:
+        return []
+    try:
+        from scipy import stats as st
+    except Exception:  # noqa: BLE001
+        return []
+
+    out: list[dict] = []
+    y = df[target]
+    # order features by model importance when available, else dataframe order
+    ranked = [b["label"] for b in (bars or []) if b.get("label") in df.columns]
+    cols = ranked + [c for c in df.columns if c != target and c not in ranked]
+    cols = [c for c in cols if c != target][:10]
+
+    def _verdict(p):
+        return "significant" if (p is not None and p < 0.05) else "not significant"
+
+    def _effect_word(name, v):
+        a = abs(v)
+        if name in ("Cohen's d",):
+            lvl = "large" if a >= 0.8 else "medium" if a >= 0.5 else "small" if a >= 0.2 else "negligible"
+        elif name in ("Cramér's V", "|r|", "η²", "|ρ|"):
+            lvl = "large" if a >= 0.5 else "medium" if a >= 0.3 else "small" if a >= 0.1 else "negligible"
+        else:
+            lvl = ""
+        return lvl
+
+    for c in cols:
+        try:
+            s = df[c]
+            numeric = pd.api.types.is_numeric_dtype(s)
+            row = None
+            if is_clf:
+                ycat = y.astype(str)
+                if numeric:
+                    sn = pd.to_numeric(s, errors="coerce")
+                    groups = [sn[ycat == g].dropna().to_numpy() for g in ycat.dropna().unique()]
+                    groups = [g for g in groups if len(g) >= 3]
+                    if len(groups) < 2:
+                        continue
+                    # normality on a sample of each group
+                    normal = all(
+                        (len(g) < 5000 and st.shapiro(g[:5000])[1] > 0.05)
+                        for g in groups
+                    ) if len(groups) <= 6 else False
+                    if len(groups) == 2:
+                        if normal:
+                            stat, p = st.ttest_ind(groups[0], groups[1], equal_var=False)
+                            test = "Welch t-test"
+                        else:
+                            stat, p = st.mannwhitneyu(groups[0], groups[1], alternative="two-sided")
+                            test = "Mann-Whitney U"
+                        # Cohen's d
+                        m1, m2 = groups[0].mean(), groups[1].mean()
+                        sp = math.sqrt((groups[0].var(ddof=1) + groups[1].var(ddof=1)) / 2) or 1e-9
+                        ed, en = abs(m1 - m2) / sp, "Cohen's d"
+                    else:
+                        if normal:
+                            stat, p = st.f_oneway(*groups)
+                            test = "one-way ANOVA"
+                        else:
+                            stat, p = st.kruskal(*groups)
+                            test = "Kruskal-Wallis"
+                        # eta² approximation from F where available
+                        ed, en = 0.0, "η²"
+                    row = {"feature": str(c), "test": test, "p": float(p), "stat": float(stat),
+                           "effect": round(float(ed), 2), "effect_name": en}
+                else:
+                    ct = pd.crosstab(s.astype(str), ycat)
+                    if ct.shape[0] < 2 or ct.shape[1] < 2 or ct.values.sum() < 5:
+                        continue
+                    chi2, p, dof, _ = st.chi2_contingency(ct)
+                    n = ct.values.sum()
+                    v = math.sqrt(chi2 / (n * (min(ct.shape) - 1))) if n else 0.0
+                    row = {"feature": str(c), "test": "chi-square", "p": float(p), "stat": float(chi2),
+                           "effect": round(float(v), 2), "effect_name": "Cramér's V"}
+            else:
+                yn = pd.to_numeric(y, errors="coerce")
+                if numeric:
+                    sn = pd.to_numeric(s, errors="coerce")
+                    d = pd.concat([sn, yn], axis=1).dropna()
+                    if len(d) < 5:
+                        continue
+                    r, p = st.pearsonr(d.iloc[:, 0], d.iloc[:, 1])
+                    row = {"feature": str(c), "test": "Pearson r", "p": float(p), "stat": round(float(r), 3),
+                           "effect": round(abs(float(r)), 2), "effect_name": "|r|"}
+                else:
+                    groups = [yn[s.astype(str) == g].dropna().to_numpy() for g in s.astype(str).dropna().unique()]
+                    groups = [g for g in groups if len(g) >= 3]
+                    if len(groups) < 2:
+                        continue
+                    stat, p = st.f_oneway(*groups)
+                    row = {"feature": str(c), "test": "one-way ANOVA", "p": float(p), "stat": float(stat),
+                           "effect": 0.0, "effect_name": "η²"}
+            if row is None or math.isnan(row["p"]):
+                continue
+            sig = row["p"] < 0.05
+            ew = _effect_word(row["effect_name"], row["effect"])
+            pdisp = "<0.001" if row["p"] < 0.001 else f"{row['p']:.3f}"
+            row["significant"] = sig
+            row["interpretation"] = (
+                f"{'Significant' if sig else 'No significant'} relationship between "
+                f"{row['feature']} and {target} ({row['test']}, p={pdisp}"
+                + (f", {ew} effect" if ew else "") + ")."
+            )
+            out.append(row)
+        except Exception:  # noqa: BLE001
+            continue
+    # most significant first
+    out.sort(key=lambda r: (r["p"], -r["effect"]))
+    return out[:10]
 
 
 def _score(is_clf, binary, y_test, preds, proba):
