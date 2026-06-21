@@ -112,6 +112,14 @@ def analyze_dataframe(
     read_note = df.attrs.get("read_note")
     if task == "clustering":
         return _cluster(df, src_rows, src_cols)
+    if task == "anomaly":
+        return _anomaly(df, src_rows, src_cols)
+    if task == "dimreduction":
+        return _dimreduction(df, target, src_rows, src_cols)
+    if task == "timeseries":
+        return _timeseries(df, target, src_rows, src_cols)
+    if task == "survival":
+        return _survival(df, target, src_rows, src_cols)
     target = target.strip()
     if target not in df.columns:
         raise ValueError(f"target column '{target}' not found in dataset")
@@ -225,9 +233,17 @@ def analyze_dataframe(
         # give the search more time on bigger data; restrict to fast histogram
         # learners (LightGBM/XGBoost) once N is large so the budget isn't wasted.
         eff_budget = int(min(75, max(time_budget, len(X_train) // 12_000)))
-        fit_kwargs = {}
+        fit_kwargs: dict[str, Any] = {}
         if len(X_train) > 100_000:
             fit_kwargs["estimator_list"] = ["lgbm", "xgboost"]
+        else:
+            # broaden the search: tree ensembles + linear + KNN baselines, and let
+            # FLAML stack the best learners into an ensemble on smaller data.
+            fit_kwargs["estimator_list"] = ["lgbm", "xgboost", "rf", "extra_tree", "kneighbor"] + (
+                ["lrl1", "lrl2"] if is_clf else ["enet"]
+            )
+            if len(X_train) <= 30_000:
+                fit_kwargs["ensemble"] = True
         automl.fit(
             X_train,
             y_train,
@@ -239,7 +255,9 @@ def analyze_dataframe(
             n_jobs=4 if big else -1,
             **fit_kwargs,
         )
-        model = automl.model.estimator
+        # when a stacked ensemble wins it has no ``.estimator`` — fall back to the
+        # wrapper itself (predict still works; SHAP just uses its permutation fallback)
+        model = getattr(automl.model, "estimator", automl.model)
         best_model = {
             "lgbm": "LightGBM",
             "xgboost": "XGBoost",
@@ -363,6 +381,28 @@ def _eval_detail(model, X_train, y_train, X_test, y_test, preds, proba, is_clf, 
             out["_cv"] = {"k": int(k), "metric": scoring,
                           "mean": round(float(scores.mean()), 3), "std": round(float(scores.std()), 3),
                           "scores": [round(float(s), 3) for s in scores]}
+        # learning curve — does the model want more data, or is it overfitting?
+        try:
+            from sklearn.model_selection import learning_curve
+            sizes, tr, va = learning_curve(
+                clone(model), Xc, yc, cv=3, scoring=scoring, n_jobs=1,
+                train_sizes=np.linspace(0.2, 1.0, 5), error_score="raise",
+            )
+            out["_learning"] = [
+                {"n": int(sizes[i]), "train": round(float(tr[i].mean()), 3), "val": round(float(va[i].mean()), 3)}
+                for i in range(len(sizes))
+            ]
+        except Exception:  # noqa: BLE001
+            pass
+    except Exception:  # noqa: BLE001
+        pass
+
+    # calibration — are the predicted probabilities trustworthy? (binary)
+    try:
+        if is_clf and proba is not None and len(classes) == 2:
+            from sklearn.calibration import calibration_curve
+            fpos, mpred = calibration_curve(np.asarray(y_test), np.asarray(proba)[:, 1], n_bins=8, strategy="quantile")
+            out["_calibration"] = [{"x": round(float(a), 3), "y": round(float(b), 3)} for a, b in zip(mpred, fpos)]
     except Exception:  # noqa: BLE001
         pass
 
@@ -1119,6 +1159,394 @@ def _cluster(df: pd.DataFrame, src_rows: int | None = None, src_cols: int | None
         "_source_cols": int(src_cols or df.shape[1]),
         "_verdict": verdict,
         "_drivers": [{"feature": b["label"], "importance": round(b["value"], 2), "direction": 0} for b in bars[:4]],
+    }
+
+
+def _numeric_matrix(df: pd.DataFrame, drop: str | None = None) -> pd.DataFrame:
+    """Drop id-like columns, coerce/encode the rest to numbers, impute, cap width —
+    a shared cleaner for the unsupervised tasks (anomaly / PCA / etc.)."""
+    work = df.copy()
+    ids = [
+        c for c in work.columns
+        if c.lower() == "id" or c.lower().endswith("id")
+        or (not pd.api.types.is_numeric_dtype(work[c]) and work[c].nunique(dropna=False) == len(work)
+            and work[c].astype(str).str.len().mean() < 25)
+    ]
+    work = work.drop(columns=[c for c in ids if c in work.columns], errors="ignore")
+    if drop and drop in work.columns:
+        work = work.drop(columns=[drop])
+    for c in work.columns:
+        if not pd.api.types.is_numeric_dtype(work[c]):
+            num = pd.to_numeric(work[c], errors="coerce")
+            work[c] = num if num.notna().sum() >= 0.8 * len(work) else work[c].astype("category").cat.codes
+    work = work.select_dtypes(include="number")
+    work = work.fillna(work.median(numeric_only=True)).fillna(0)
+    if work.shape[1] > 150:
+        keep = work.var(numeric_only=True).fillna(0.0).sort_values(ascending=False).head(150).index
+        work = work[list(keep)]
+    return work
+
+
+def _nz(s):
+    mn, mx = float(s.min()), float(s.max())
+    return (s - mn) / (mx - mn) if mx > mn else s * 0 + 0.5
+
+
+def _anomaly(df: pd.DataFrame, src_rows=None, src_cols=None) -> dict[str, Any]:
+    """Unsupervised outlier/fraud detection with Isolation Forest."""
+    from sklearn.ensemble import IsolationForest
+    from sklearn.preprocessing import StandardScaler
+
+    fixes: list[str] = []
+    if df.attrs.get("read_note"):
+        fixes.append(df.attrs["read_note"])
+    work = df.copy()
+    if len(work) > 50000:
+        work = work.sample(50000, random_state=42)
+        fixes.append("sampled 50,000 rows for the anomaly scan")
+    Xn = _numeric_matrix(work)
+    if Xn.shape[1] < 1:
+        raise ValueError("anomaly detection needs at least one numeric feature")
+    Xs = StandardScaler().fit_transform(Xn)
+    iso = IsolationForest(contamination="auto", random_state=42, n_estimators=200)
+    flags = iso.fit_predict(Xs)
+    scores = -iso.score_samples(Xs)
+    is_anom = flags == -1
+    pct = float(is_anom.mean() * 100)
+    fixes.append(f"label-encoded {sum(not pd.api.types.is_numeric_dtype(work[c]) for c in work.columns)} non-numeric column(s)")
+
+    diffs = {}
+    for c in Xn.columns:
+        col = Xn[c].to_numpy(float)
+        sd = col.std() or 1e-9
+        diffs[c] = (abs(col[is_anom].mean() - col[~is_anom].mean()) / sd) if (is_anom.any() and (~is_anom).any()) else 0.0
+    order = sorted(diffs, key=lambda c: -diffs[c])[:6]
+    mx = max(diffs.values()) or 1.0
+    bars = [{"label": str(c), "value": float(max(0.08, diffs[c] / mx))} for c in order]
+    dist = [
+        {"label": "Normal", "value": float(1 - is_anom.mean()), "display": f"{100 - pct:.0f}%"},
+        {"label": "Anomalous", "value": float(is_anom.mean()), "display": f"{pct:.1f}%"},
+    ]
+    scatter = None
+    if len(order) >= 2:
+        fx, fy = order[0], order[1]
+        sdf = Xn[[fx, fy]].reset_index(drop=True)
+        sdf["_a"] = is_anom.astype(int)
+        if len(sdf) > 160:
+            sdf = sdf.sample(160, random_state=42)
+        scatter = {"x": fx, "y": fy,
+                   "points": [{"x": round(float(a), 3), "y": round(float(b), 3), "c": float(c)}
+                              for a, b, c in zip(_nz(sdf[fx]), _nz(sdf[fy]), sdf["_a"])],
+                   "legend": {"low": "normal", "high": "anomaly"}}
+    counts, edges = np.histogram(scores, bins=8)
+    hist = {"feature": "anomaly score",
+            "bins": [{"label": f"{edges[i]:.2f}–{edges[i + 1]:.2f}", "count": int(counts[i])} for i in range(len(counts))]}
+    stats = [
+        {"label": "Rows scanned", "value": f"{len(Xn):,}"},
+        {"label": "Features used", "value": str(Xn.shape[1])},
+        {"label": "Flagged", "value": f"{int(is_anom.sum()):,}"},
+        {"label": "Anomaly rate", "value": f"{pct:.1f}%"},
+    ]
+    return {
+        "taskLabel": "Anomaly detection", "bestModel": "Isolation Forest",
+        "headline": {"fraction": min(1.0, pct / 100), "value": f"{pct:.1f}%", "label": "flagged"},
+        "metrics": [{"label": "Anomalies", "value": f"{int(is_anom.sum()):,}"},
+                    {"label": "Rate", "value": f"{pct:.1f}%"},
+                    {"label": "Features", "value": str(Xn.shape[1])},
+                    {"label": "Rows", "value": f"{len(Xn):,}"}],
+        "barsTitle": "What defines the anomalies", "bars": bars,
+        "distTitle": "Normal vs anomalous", "dist": dist,
+        "report": [
+            f"Isolation Forest scanned {len(Xn):,} records across {Xn.shape[1]} numeric features and flagged "
+            f"{int(is_anom.sum()):,} ({pct:.1f}%) as anomalous — records that sit far from the normal pattern.",
+            f"The anomalies separate most along {order[0]}" + (f" and {order[1]}" if len(order) > 1 else "")
+            + ", so those features carry the strongest outlier signal.",
+            "Each flagged record is unusual relative to the bulk of the data; review them for fraud, errors, or rare events.",
+        ],
+        "recommendation": f"Investigate the {int(is_anom.sum()):,} flagged records, starting with the extremes on {order[0]}.",
+        "_fixes": fixes, "_features": list(Xn.columns), "_target": "(unsupervised)",
+        "_rows": int(len(Xn)), "_cols": int(df.shape[1]),
+        "_source_rows": int(src_rows or len(df)), "_source_cols": int(src_cols or df.shape[1]),
+        "_scatter": scatter, "_hist": hist, "_stats": stats,
+        "_drivers": [{"feature": b["label"], "importance": round(b["value"], 2), "direction": 0} for b in bars[:4]],
+    }
+
+
+def _dimreduction(df: pd.DataFrame, target: str, src_rows=None, src_cols=None) -> dict[str, Any]:
+    """PCA projection to 2-D + variance explained, coloured by the target if given."""
+    from sklearn.decomposition import PCA
+    from sklearn.preprocessing import StandardScaler
+
+    fixes: list[str] = []
+    if df.attrs.get("read_note"):
+        fixes.append(df.attrs["read_note"])
+    work = df.copy()
+    if len(work) > 30000:
+        work = work.sample(30000, random_state=42)
+        fixes.append("sampled 30,000 rows")
+    tgt = (target or "").strip()
+    Xn = _numeric_matrix(work, drop=tgt if tgt in work.columns else None)
+    if Xn.shape[1] < 2:
+        raise ValueError("dimensionality reduction needs at least two numeric features")
+    Xs = StandardScaler().fit_transform(Xn)
+    pca = PCA(n_components=min(5, Xn.shape[1])).fit(Xs)
+    proj = pca.transform(Xs)[:, :2]
+    var = pca.explained_variance_ratio_
+
+    color, legend = None, None
+    if tgt and tgt in work.columns:
+        yv = work[tgt].reset_index(drop=True)
+        if pd.api.types.is_numeric_dtype(yv):
+            yn = pd.to_numeric(yv, errors="coerce").fillna(0.0)
+            color = _nz(yn)
+        else:
+            cats = yv.astype("category").cat.codes
+            color = cats / (cats.max() or 1)
+        legend = {"low": f"low {tgt}", "high": f"high {tgt}"}
+
+    px, py = _nz(pd.Series(proj[:, 0])), _nz(pd.Series(proj[:, 1]))
+    idx = np.arange(len(px))
+    if len(idx) > 180:
+        idx = np.random.RandomState(42).choice(len(idx), 180, replace=False)
+    pts = [{"x": round(float(px.iloc[i]), 3), "y": round(float(py.iloc[i]), 3),
+            "c": float(color.iloc[i]) if color is not None else 0.4} for i in idx]
+    scatter = {"x": "PC1", "y": "PC2", "points": pts}
+    if legend:
+        scatter["legend"] = legend
+    load = np.abs(pca.components_[0])
+    lmx = load.max() or 1.0
+    lo = np.argsort(load)[::-1][:6]
+    bars = [{"label": str(Xn.columns[i]), "value": float(max(0.08, load[i] / lmx))} for i in lo]
+    dist = [{"label": f"PC{i + 1}", "value": float(var[i]), "display": f"{var[i] * 100:.0f}%"} for i in range(len(var))]
+    cum2 = float(var[:2].sum())
+    return {
+        "taskLabel": "Dimensionality reduction", "bestModel": f"PCA ({Xn.shape[1]} → 2)",
+        "headline": {"fraction": cum2, "value": f"{cum2 * 100:.0f}%", "label": "variance (2D)"},
+        "metrics": [{"label": "Components", "value": str(len(var))},
+                    {"label": "2-D variance", "value": f"{cum2 * 100:.0f}%"},
+                    {"label": "Features", "value": str(Xn.shape[1])},
+                    {"label": "Rows", "value": f"{len(Xn):,}"}],
+        "barsTitle": "Top PC1 loadings (drivers of spread)", "bars": bars,
+        "distTitle": "Variance explained per component", "dist": dist,
+        "report": [
+            f"PCA compressed {Xn.shape[1]} numeric features into 2 components that together capture "
+            f"{cum2 * 100:.0f}% of the variation, so the data can be viewed in a single 2-D map.",
+            f"PC1 is driven most by {Xn.columns[lo[0]]}" + (f" and {Xn.columns[lo[1]]}" if len(lo) > 1 else "")
+            + " — the directions along which records differ the most.",
+            "Use the projection to spot clusters, gradients or outliers that are hidden in high dimensions.",
+        ],
+        "recommendation": f"Focus modelling on the highest-variance directions led by {Xn.columns[lo[0]]}.",
+        "_fixes": fixes, "_features": list(Xn.columns), "_target": tgt or "(unsupervised)",
+        "_rows": int(len(Xn)), "_cols": int(df.shape[1]),
+        "_source_rows": int(src_rows or len(df)), "_source_cols": int(src_cols or df.shape[1]),
+        "_scatter": scatter,
+        "_stats": [{"label": "Rows", "value": f"{len(Xn):,}"}, {"label": "Features", "value": str(Xn.shape[1])},
+                   {"label": "PC1 var", "value": f"{var[0] * 100:.0f}%"}, {"label": "PC2 var", "value": f"{var[1] * 100:.0f}%"}],
+        "_drivers": [{"feature": b["label"], "importance": round(b["value"], 2), "direction": 0} for b in bars[:4]],
+    }
+
+
+def _infer_period(n: int) -> int:
+    if n >= 60:
+        return 12
+    if n >= 28:
+        return 7
+    return 1
+
+
+def _timeseries(df: pd.DataFrame, target: str, src_rows=None, src_cols=None) -> dict[str, Any]:
+    """Holt-Winters (ETS) forecast of a numeric series, ordered by a date column if present."""
+    from statsmodels.tsa.holtwinters import ExponentialSmoothing
+    from sklearn.metrics import mean_absolute_error
+
+    fixes: list[str] = []
+    if df.attrs.get("read_note"):
+        fixes.append(df.attrs["read_note"])
+    work = df.copy()
+    tgt = (target or "").strip()
+
+    def isnum(c):
+        try:
+            return pd.to_numeric(work[c], errors="coerce").notna().mean() > 0.8
+        except Exception:  # noqa: BLE001
+            return False
+
+    if not tgt or tgt not in work.columns or not isnum(tgt):
+        nums = [c for c in work.columns if isnum(c)]
+        if not nums:
+            raise ValueError("time-series forecasting needs a numeric value column")
+        tgt = nums[-1]
+        fixes.append(f"forecasting numeric column '{tgt}'")
+    datecol = None
+    for c in work.columns:
+        if c == tgt:
+            continue
+        try:
+            import warnings as _w
+            with _w.catch_warnings():
+                _w.simplefilter("ignore")
+                parsed = pd.to_datetime(work[c], errors="coerce")
+        except Exception:  # noqa: BLE001
+            parsed = None
+        if parsed is not None and parsed.notna().mean() > 0.8:
+            datecol = c
+            work = work.assign(_t=parsed)
+            break
+    if datecol:
+        work = work.dropna(subset=["_t"]).sort_values("_t")
+        fixes.append(f"ordered by date column '{datecol}'")
+    y = pd.to_numeric(work[tgt], errors="coerce").dropna().to_numpy(dtype=float)
+    if len(y) < 12:
+        raise ValueError("time-series forecasting needs at least 12 points")
+    if len(y) > 3000:
+        y = y[-3000:]
+    period = _infer_period(len(y))
+    seasonal = period > 1 and len(y) > 2 * period
+    H = max(6, min(24, len(y) // 6))
+    mae = 0.0
+    mape = float("nan")
+    try:
+        m = ExponentialSmoothing(y, trend="add", seasonal="add" if seasonal else None,
+                                 seasonal_periods=period if seasonal else None,
+                                 initialization_method="estimated").fit()
+        fc = np.asarray(m.forecast(H), dtype=float)
+        fitted = np.asarray(m.fittedvalues, dtype=float)
+        mae = float(mean_absolute_error(y, fitted))
+        denom = np.where(np.abs(y) < 1e-9, np.nan, y)
+        mape = float(np.nanmean(np.abs((y - fitted) / denom)) * 100)
+    except Exception:  # noqa: BLE001
+        m = ExponentialSmoothing(y, trend="add", initialization_method="estimated").fit()
+        fc = np.asarray(m.forecast(H), dtype=float)
+    histn = min(60, len(y))
+    hist = y[-histn:]
+    pts = [{"label": str(i), "value": round(float(v), 4), "kind": "history"} for i, v in enumerate(hist)]
+    pts += [{"label": str(histn + i), "value": round(float(v), 4), "kind": "forecast"} for i, v in enumerate(fc)]
+    direction = "rising" if fc[-1] > hist[-1] else "falling" if fc[-1] < hist[-1] else "flat"
+    return {
+        "taskLabel": "Time-series forecasting", "bestModel": "Holt-Winters ETS"
+        + (f" (seasonal, period {period})" if seasonal else ""),
+        "headline": {"value": f"{fc[-1]:,.1f}", "label": "next forecast"},
+        "metrics": [{"label": "Points", "value": f"{len(y):,}"}, {"label": "Horizon", "value": str(H)},
+                    {"label": "MAE", "value": f"{mae:.2f}"},
+                    {"label": "MAPE", "value": f"{mape:.1f}%" if not math.isnan(mape) else "—"}],
+        "barsTitle": "", "bars": [], "distTitle": "", "dist": [],
+        "report": [
+            f"A Holt-Winters exponential-smoothing model forecasts {tgt} for the next {H} periods; the series is "
+            f"currently {direction}, ending its forecast near {fc[-1]:,.1f}.",
+            (f"Seasonality with a period of {period} was modelled. " if seasonal else "No strong seasonality was modelled. ")
+            + f"In-sample error is MAE {mae:.2f}" + (f" ({mape:.1f}% MAPE)." if not math.isnan(mape) else "."),
+            "Use the forecast band to plan ahead; re-run as new data arrives to keep it current.",
+        ],
+        "recommendation": f"Plan for a {direction} {tgt}; the model projects ~{fc[-1]:,.1f} by the end of the horizon.",
+        "_fixes": fixes, "_features": [tgt], "_target": tgt,
+        "_rows": int(len(y)), "_cols": int(df.shape[1]),
+        "_source_rows": int(src_rows or len(df)), "_source_cols": int(src_cols or df.shape[1]),
+        "_forecast": {"points": pts, "horizon": int(H), "value_col": tgt, "date_col": datecol},
+        "_drivers": [],
+    }
+
+
+def _survival(df: pd.DataFrame, target: str, src_rows=None, src_cols=None) -> dict[str, Any]:
+    """Kaplan-Meier survival curve + Cox proportional-hazards (lifelines)."""
+    from lifelines import KaplanMeierFitter, CoxPHFitter
+
+    fixes: list[str] = []
+    if df.attrs.get("read_note"):
+        fixes.append(df.attrs["read_note"])
+    work = df.copy()
+    event_col = (target or "").strip()
+    if not event_col or event_col not in work.columns:
+        for c in work.columns:
+            if work[c].nunique(dropna=True) == 2:
+                event_col = c
+                break
+    if not event_col or event_col not in work.columns:
+        raise ValueError("survival analysis needs a binary event column (the target)")
+    ev = work[event_col]
+    if not pd.api.types.is_numeric_dtype(ev):
+        pos = sorted(ev.dropna().astype(str).unique())[-1]
+        events = (ev.astype(str) == pos).astype(int)
+    else:
+        events = (pd.to_numeric(ev, errors="coerce") > 0).astype(int)
+    dur_names = {"time", "duration", "tenure", "days", "months", "age", "lifetime", "t"}
+    durcol = None
+    for c in work.columns:
+        if c == event_col:
+            continue
+        if str(c).lower() in dur_names and pd.to_numeric(work[c], errors="coerce").notna().mean() > 0.8:
+            durcol = c
+            break
+    if durcol is None:
+        for c in work.columns:
+            if c == event_col:
+                continue
+            n = pd.to_numeric(work[c], errors="coerce")
+            if n.notna().mean() > 0.8 and (n.dropna() >= 0).mean() > 0.9:
+                durcol = c
+                break
+    if durcol is None:
+        raise ValueError("survival analysis needs a non-negative duration/time column")
+    fixes.append(f"duration='{durcol}', event='{event_col}'")
+    d = pd.DataFrame({"T": pd.to_numeric(work[durcol], errors="coerce"), "E": events}).dropna()
+    d = d[d["T"] >= 0]
+    if len(d) < 10:
+        raise ValueError("not enough rows for survival analysis")
+    kmf = KaplanMeierFitter()
+    kmf.fit(d["T"], event_observed=d["E"])
+    sf = kmf.survival_function_
+    ts, ss = sf.index.to_numpy(), sf.iloc[:, 0].to_numpy()
+    step = max(1, len(ts) // 40)
+    km = [{"t": round(float(t), 3), "s": round(float(s), 4)} for t, s in zip(ts[::step], ss[::step])]
+    med = kmf.median_survival_time_
+    median = float(med) if np.isfinite(med) else float(ts[-1])
+    hazards = []
+    try:
+        feats = _numeric_matrix(work.drop(columns=[event_col], errors="ignore"), drop=durcol)
+        feats = feats.loc[:, feats.nunique() > 1]
+        cdf = feats.copy()
+        cdf["T"] = pd.to_numeric(work[durcol], errors="coerce").reindex(feats.index)
+        cdf["E"] = events.reindex(feats.index)
+        cdf = cdf.dropna()
+        if cdf.shape[1] > 3 and len(cdf) > 40:
+            cph = CoxPHFitter(penalizer=0.1)
+            cph.fit(cdf, duration_col="T", event_col="E")
+            hr = cph.hazard_ratios_
+            hr = hr.reindex(hr.sub(1).abs().sort_values(ascending=False).index).head(6)
+            lmax = max((abs(math.log(v)) for v in hr.values if v > 0), default=1.0) or 1.0
+            for name, val in hr.items():
+                if val <= 0:
+                    continue
+                hazards.append({"label": str(name),
+                                "value": float(max(0.08, min(1.0, abs(math.log(val)) / lmax))),
+                                "sign": 1 if val > 1 else -1, "hr": round(float(val), 2)})
+    except Exception:  # noqa: BLE001
+        hazards = []
+    bars = [{"label": h["label"], "value": h["value"], "sign": h["sign"]} for h in hazards] or [{"label": durcol, "value": 1.0}]
+    erate = float(events.mean() * 100)
+    return {
+        "taskLabel": "Survival analysis", "bestModel": "Kaplan-Meier / Cox PH",
+        "headline": {"value": f"{median:.0f}", "label": f"median {durcol}"},
+        "metrics": [{"label": "Subjects", "value": f"{len(d):,}"}, {"label": "Events", "value": f"{int(d['E'].sum()):,}"},
+                    {"label": "Event rate", "value": f"{erate:.0f}%"}, {"label": f"Median {durcol}", "value": f"{median:.0f}"}],
+        "barsTitle": "Hazard ratios (Cox) — what changes risk", "bars": bars,
+        "distTitle": "Outcome split", "dist": [
+            {"label": "Event", "value": float(events.mean()), "display": f"{erate:.0f}%"},
+            {"label": "Censored", "value": float(1 - events.mean()), "display": f"{100 - erate:.0f}%"}],
+        "report": [
+            f"Kaplan-Meier estimated the survival curve over '{durcol}' for {len(d):,} subjects; the median time until "
+            f"the event ('{event_col}') is {median:.0f}.",
+            (f"A Cox proportional-hazards model ranked the risk factors: {hazards[0]['label']} has the largest effect "
+             f"(hazard ratio {hazards[0]['hr']}). " if hazards else "")
+            + "A hazard ratio above 1 raises risk; below 1 is protective.",
+            "Survival analysis answers 'how long until' — useful for churn timing, equipment failure, and clinical outcomes.",
+        ],
+        "recommendation": (f"Focus on {hazards[0]['label']} — it most changes time-to-event." if hazards
+                           else f"Track '{durcol}' against '{event_col}' to manage timing risk."),
+        "_fixes": fixes, "_features": [h["label"] for h in hazards] or [durcol], "_target": event_col,
+        "_rows": int(len(d)), "_cols": int(df.shape[1]),
+        "_source_rows": int(src_rows or len(df)), "_source_cols": int(src_cols or df.shape[1]),
+        "_km": km,
+        "_drivers": [{"feature": h["label"], "importance": round(h["value"], 2), "direction": h["sign"]} for h in hazards[:4]],
     }
 
 

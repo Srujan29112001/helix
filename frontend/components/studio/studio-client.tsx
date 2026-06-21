@@ -31,6 +31,8 @@ import {
   Network,
   ChevronRight,
   Sigma,
+  TrendingUp,
+  Activity,
 } from "lucide-react";
 import { AGENTS, type AgentId, type Agent } from "@/lib/agents";
 import {
@@ -64,6 +66,8 @@ import {
   ConfusionMatrix,
   Curve,
   PredVsActual,
+  ForecastChart,
+  LearningCurve,
 } from "@/components/studio/charts";
 import { KnowledgeGraph3D } from "@/components/studio/knowledge-graph";
 import { Logo } from "@/components/site/logo";
@@ -932,9 +936,9 @@ function Setup({
         </div>
 
         {datasetId === "custom" && (columns.length > 0 || !!custom) && (
-          <div className={cn("mt-3 grid gap-3", taskType !== "clustering" && columns.length > 0 && "sm:grid-cols-2")}>
-            {/* clustering is unsupervised → no target column; non-CSV files (Excel/Parquet) parse on the server → Auto target */}
-            {taskType !== "clustering" && columns.length > 0 && (
+          <div className={cn("mt-3 grid gap-3", taskType !== "clustering" && taskType !== "anomaly" && columns.length > 0 && "sm:grid-cols-2")}>
+            {/* clustering/anomaly are unsupervised → no target column; non-CSV files (Excel/Parquet) parse on the server → Auto target */}
+            {taskType !== "clustering" && taskType !== "anomaly" && columns.length > 0 && (
               <div className="rounded-2xl border border-white/10 bg-panel p-4">
                 <label className="font-mono text-[10px] uppercase tracking-[0.18em] text-mute">
                   Target column · what to predict
@@ -981,6 +985,18 @@ function Setup({
                 </option>
                 <option value="nlp" className="bg-ink text-mist">
                   NLP / text
+                </option>
+                <option value="anomaly" className="bg-ink text-mist">
+                  Anomaly / fraud detection
+                </option>
+                <option value="dimreduction" className="bg-ink text-mist">
+                  Dimensionality reduction (PCA)
+                </option>
+                <option value="timeseries" className="bg-ink text-mist">
+                  Time-series forecasting
+                </option>
+                <option value="survival" className="bg-ink text-mist">
+                  Survival analysis
                 </option>
               </select>
             </div>
@@ -2144,6 +2160,18 @@ function Results({
                 <Curve points={r._pr} xlabel="recall" ylabel="precision" accent={ds.accent} />
               </div>
             )}
+            {r._calibration && r._calibration.length > 1 && (
+              <div>
+                <div className="mb-2 font-mono text-[10px] uppercase tracking-wider text-mute">Calibration curve</div>
+                <Curve points={r._calibration} xlabel="predicted probability" ylabel="actual frequency" accent={ds.accent} diagonal />
+              </div>
+            )}
+            {r._learning && r._learning.length > 1 && (
+              <div>
+                <div className="mb-2 font-mono text-[10px] uppercase tracking-wider text-mute">Learning curve</div>
+                <LearningCurve data={r._learning} accent={ds.accent} />
+              </div>
+            )}
             {r._residuals && r._residuals.points.length > 1 && (
               <div className="lg:col-span-2 lg:mx-auto lg:max-w-md">
                 <div className="mb-2 font-mono text-[10px] uppercase tracking-wider text-mute">Predicted vs actual</div>
@@ -2151,6 +2179,45 @@ function Results({
               </div>
             )}
           </div>
+        </div>
+      )}
+
+      {/* time-series forecast */}
+      {r._forecast && r._forecast.points.length > 1 && (
+        <div className="rounded-2xl border border-white/10 bg-panel p-6">
+          <div className="mb-1 flex flex-wrap items-center gap-2">
+            <TrendingUp className="h-4 w-4 text-brand" />
+            <h3 className="font-mono text-xs uppercase tracking-[0.16em] text-mute">
+              Forecast · {r._forecast.value_col}
+            </h3>
+            <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 font-mono text-[10px] text-mute">
+              {r._forecast.horizon} periods ahead{r._forecast.date_col ? ` · by ${r._forecast.date_col}` : ""}
+            </span>
+          </div>
+          <div className="mt-3">
+            <ForecastChart points={r._forecast.points} accent={ds.accent} />
+          </div>
+        </div>
+      )}
+
+      {/* survival curve (Kaplan-Meier) */}
+      {r._km && r._km.length > 1 && (
+        <div className="rounded-2xl border border-white/10 bg-panel p-6">
+          <div className="mb-3 flex items-center gap-2">
+            <Activity className="h-4 w-4 text-brand" />
+            <h3 className="font-mono text-xs uppercase tracking-[0.16em] text-mute">
+              Survival curve · Kaplan-Meier
+            </h3>
+          </div>
+          <div className="mx-auto max-w-md">
+            {(() => {
+              const ts = r._km!.map((p) => p.t);
+              const tlo = Math.min(...ts), thi = Math.max(...ts);
+              const pts = r._km!.map((p) => ({ x: thi > tlo ? (p.t - tlo) / (thi - tlo) : 0.5, y: p.s }));
+              return <Curve points={pts} xlabel={`time (${tlo.toFixed(0)}–${thi.toFixed(0)})`} ylabel="survival probability" accent={ds.accent} />;
+            })()}
+          </div>
+          <p className="mt-1 text-center font-mono text-[9px] text-mute">probability of &quot;surviving&quot; (no event yet) as time increases</p>
         </div>
       )}
 

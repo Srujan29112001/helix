@@ -969,3 +969,73 @@ export function PredVsActual({ points, accent = "#25d7f0" }: { points: { actual:
     </div>
   );
 }
+
+/** Time-series forecast: solid history + dashed forward forecast. */
+export function ForecastChart({
+  points,
+  accent = "#25d7f0",
+}: {
+  points: { label: string; value: number; kind: "history" | "forecast" }[];
+  accent?: string;
+}) {
+  if (!points || points.length < 2) return null;
+  const W = 660, H = 260, P = 40;
+  const vals = points.map((p) => p.value);
+  const lo = Math.min(...vals), hi = Math.max(...vals);
+  const sx = (i: number) => P + (i / (points.length - 1)) * (W - P - 14);
+  const sy = (v: number) => H - P - (hi > lo ? (v - lo) / (hi - lo) : 0.5) * (H - P - 24);
+  const histPts = points.map((p, i) => ({ ...p, i })).filter((p) => p.kind === "history");
+  const fcPts = points.map((p, i) => ({ ...p, i })).filter((p) => p.kind === "forecast");
+  // forecast line starts at the last history point for continuity
+  const lastHist = histPts[histPts.length - 1];
+  const histLine = histPts.map((p) => `${sx(p.i).toFixed(1)},${sy(p.value).toFixed(1)}`).join(" ");
+  const fcLine = (lastHist ? [lastHist, ...fcPts] : fcPts).map((p) => `${sx(p.i).toFixed(1)},${sy(p.value).toFixed(1)}`).join(" ");
+  return (
+    <div>
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" preserveAspectRatio="xMidYMid meet">
+        {[0.25, 0.5, 0.75, 1].map((g) => (
+          <line key={g} x1={P} y1={sy(lo + g * (hi - lo))} x2={W - 10} y2={sy(lo + g * (hi - lo))} stroke="rgba(255,255,255,0.06)" />
+        ))}
+        <line x1={P} y1={H - P} x2={W - 10} y2={H - P} stroke="rgba(255,255,255,0.18)" />
+        <line x1={P} y1={12} x2={P} y2={H - P} stroke="rgba(255,255,255,0.18)" />
+        {lastHist && <line x1={sx(lastHist.i)} y1={12} x2={sx(lastHist.i)} y2={H - P} stroke="rgba(255,255,255,0.14)" strokeDasharray="3 3" />}
+        <polyline points={histLine} fill="none" stroke={accent} strokeWidth="2.5" />
+        <polyline points={fcLine} fill="none" stroke="#fbbf24" strokeWidth="2.5" strokeDasharray="6 4" />
+        <text x={(W + P) / 2} y={H - 8} fontSize="11" fill="#9fb0c9" textAnchor="middle">time →</text>
+      </svg>
+      <div className="mt-1 flex items-center gap-4 font-mono text-[9px] text-mute">
+        <span className="flex items-center gap-1.5"><span className="h-0.5 w-4" style={{ background: accent }} /> history</span>
+        <span className="flex items-center gap-1.5"><span className="h-0.5 w-4 bg-gold" /> forecast</span>
+      </div>
+    </div>
+  );
+}
+
+/** Learning curve: training vs validation score as training data grows. */
+export function LearningCurve({ data, accent = "#25d7f0" }: { data: { n: number; train: number; val: number }[]; accent?: string }) {
+  if (!data || data.length < 2) return null;
+  const W = 320, H = 240, P = 40;
+  const ns = data.map((d) => d.n);
+  const nlo = Math.min(...ns), nhi = Math.max(...ns);
+  const sx = (n: number) => P + (nhi > nlo ? (n - nlo) / (nhi - nlo) : 0.5) * (W - P - 12);
+  const sy = (v: number) => H - P - Math.max(0, Math.min(1, v)) * (H - P - 14);
+  const tline = data.map((d) => `${sx(d.n).toFixed(1)},${sy(d.train).toFixed(1)}`).join(" ");
+  const vline = data.map((d) => `${sx(d.n).toFixed(1)},${sy(d.val).toFixed(1)}`).join(" ");
+  return (
+    <div>
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" preserveAspectRatio="xMidYMid meet">
+        <line x1={P} y1={H - P} x2={W - 10} y2={H - P} stroke="rgba(255,255,255,0.18)" />
+        <line x1={P} y1={12} x2={P} y2={H - P} stroke="rgba(255,255,255,0.18)" />
+        <polyline points={tline} fill="none" stroke={accent} strokeWidth="2.5" />
+        <polyline points={vline} fill="none" stroke="#fb7185" strokeWidth="2.5" />
+        <text x={(W + P) / 2} y={H - 8} fontSize="11" fill="#9fb0c9" textAnchor="middle">training size →</text>
+        <text x={14} y={(H - P) / 2} fontSize="11" fill="#9fb0c9" textAnchor="middle" transform={`rotate(-90 14 ${(H - P) / 2})`}>↑ score</text>
+      </svg>
+      <div className="mt-1 flex items-center gap-4 font-mono text-[9px] text-mute">
+        <span className="flex items-center gap-1.5"><span className="h-0.5 w-4" style={{ background: accent }} /> train</span>
+        <span className="flex items-center gap-1.5"><span className="h-0.5 w-4 bg-coral" /> validation</span>
+        <span>· a big gap = overfitting; both low = needs better features</span>
+      </div>
+    </div>
+  );
+}

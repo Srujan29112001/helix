@@ -17,6 +17,8 @@ numpy<2            # keeps SHAP + compiled extensions consistent
 scikit-learn>=1.3.0
 flaml[automl]>=2.1.0
 shap<0.50          # 0.46.x works with numpy<2
+statsmodels>=0.14  # time-series forecasting (Holt-Winters / ETS)
+lifelines>=0.27    # survival analysis (Kaplan-Meier / Cox PH)
 
 # --- sandbox (Phase 3) + RAG (Phase 5) ---
 RestrictedPython>=7.0           # zero-dependency in-process executor (fallback)

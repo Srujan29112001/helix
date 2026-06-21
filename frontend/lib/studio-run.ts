@@ -165,6 +165,15 @@ export interface RunResults {
   _roc?: { x: number; y: number }[];
   _pr?: { x: number; y: number }[];
   _residuals?: { points: { actual: number; pred: number }[] };
+  _learning?: { n: number; train: number; val: number }[];
+  _calibration?: { x: number; y: number }[];
+  _forecast?: {
+    points: { label: string; value: number; kind: "history" | "forecast" }[];
+    horizon: number;
+    value_col: string;
+    date_col: string | null;
+  };
+  _km?: { t: number; s: number }[];
   _verdict?: { level: "excellent" | "good" | "fair" | "weak"; label: string; detail: string } | null;
   _source_rows?: number;
   _source_cols?: number;
