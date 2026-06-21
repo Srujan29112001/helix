@@ -61,6 +61,9 @@ import {
   CumulativeArea,
   LineChart,
   ChartCard,
+  ConfusionMatrix,
+  Curve,
+  PredVsActual,
 } from "@/components/studio/charts";
 import { KnowledgeGraph3D } from "@/components/studio/knowledge-graph";
 import { Logo } from "@/components/site/logo";
@@ -921,17 +924,17 @@ function Setup({
             <input
               ref={fileInput}
               type="file"
-              accept=".csv"
+              accept=".csv,.xlsx,.xls,.parquet,.json"
               className="hidden"
               onChange={(e) => onFile(e.target.files?.[0] ?? undefined)}
             />
           </button>
         </div>
 
-        {datasetId === "custom" && columns.length > 0 && (
-          <div className={cn("mt-3 grid gap-3", taskType !== "clustering" && "sm:grid-cols-2")}>
-            {/* clustering is unsupervised → no target column */}
-            {taskType !== "clustering" && (
+        {datasetId === "custom" && (columns.length > 0 || !!custom) && (
+          <div className={cn("mt-3 grid gap-3", taskType !== "clustering" && columns.length > 0 && "sm:grid-cols-2")}>
+            {/* clustering is unsupervised → no target column; non-CSV files (Excel/Parquet) parse on the server → Auto target */}
+            {taskType !== "clustering" && columns.length > 0 && (
               <div className="rounded-2xl border border-white/10 bg-panel p-4">
                 <label className="font-mono text-[10px] uppercase tracking-[0.18em] text-mute">
                   Target column · what to predict
@@ -2067,6 +2070,86 @@ function Results({
                 ))}
               </tbody>
             </table>
+          </div>
+        </div>
+      )}
+
+      {/* model evaluation — CV, confusion matrix, per-class, ROC/PR, residuals */}
+      {(r._cv || r._confusion || r._per_class || r._roc || r._residuals) && (
+        <div className="rounded-2xl border border-white/10 bg-panel p-6">
+          <div className="mb-4 flex items-center gap-2">
+            <Gauge className="h-4 w-4 text-brand" />
+            <h3 className="font-mono text-xs uppercase tracking-[0.16em] text-mute">
+              Model evaluation · diagnostics
+            </h3>
+          </div>
+
+          {r._cv && (
+            <div className="mb-4 flex flex-wrap items-center gap-3 rounded-xl border border-white/10 bg-white/[0.03] p-3">
+              <span className="font-mono text-[10px] uppercase tracking-wider text-mute">
+                {r._cv.k}-fold cross-validation
+              </span>
+              <span className="font-display text-lg font-semibold text-white">
+                {r._cv.mean.toFixed(3)} <span className="text-sm text-mute">± {r._cv.std.toFixed(3)}</span>
+              </span>
+              <span className="font-mono text-[10px] text-mute">({r._cv.metric}, mean ± std across folds — more honest than a single split)</span>
+            </div>
+          )}
+
+          <div className="grid gap-5 lg:grid-cols-2">
+            {r._confusion && (
+              <div>
+                <div className="mb-2 font-mono text-[10px] uppercase tracking-wider text-mute">Confusion matrix</div>
+                <ConfusionMatrix labels={r._confusion.labels} matrix={r._confusion.matrix} />
+              </div>
+            )}
+            {r._per_class && r._per_class.length > 0 && (
+              <div>
+                <div className="mb-2 font-mono text-[10px] uppercase tracking-wider text-mute">Per-class metrics</div>
+                <div className="scroll-thin max-h-64 overflow-auto rounded-lg border border-white/10 bg-white/[0.02]">
+                  <table className="w-full text-left text-xs">
+                    <thead className="sticky top-0 bg-panel">
+                      <tr className="font-mono text-[10px] uppercase tracking-wider text-mute">
+                        <th className="px-3 py-2">Class</th>
+                        <th className="px-3 py-2 text-right">Precision</th>
+                        <th className="px-3 py-2 text-right">Recall</th>
+                        <th className="px-3 py-2 text-right">F1</th>
+                        <th className="px-3 py-2 text-right">Support</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {r._per_class.map((c, i) => (
+                        <tr key={i} className="border-t border-white/5">
+                          <td className="max-w-[120px] truncate px-3 py-1.5 text-mist">{c.label}</td>
+                          <td className="px-3 py-1.5 text-right font-mono text-mute">{c.precision.toFixed(2)}</td>
+                          <td className="px-3 py-1.5 text-right font-mono text-mute">{c.recall.toFixed(2)}</td>
+                          <td className="px-3 py-1.5 text-right font-mono text-mute">{c.f1.toFixed(2)}</td>
+                          <td className="px-3 py-1.5 text-right font-mono text-mute">{c.support}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+            {r._roc && r._roc.length > 1 && (
+              <div>
+                <div className="mb-2 font-mono text-[10px] uppercase tracking-wider text-mute">ROC curve</div>
+                <Curve points={r._roc} xlabel="false positive rate" ylabel="true positive rate" accent={ds.accent} diagonal />
+              </div>
+            )}
+            {r._pr && r._pr.length > 1 && (
+              <div>
+                <div className="mb-2 font-mono text-[10px] uppercase tracking-wider text-mute">Precision-recall curve</div>
+                <Curve points={r._pr} xlabel="recall" ylabel="precision" accent={ds.accent} />
+              </div>
+            )}
+            {r._residuals && r._residuals.points.length > 1 && (
+              <div className="lg:col-span-2 lg:mx-auto lg:max-w-md">
+                <div className="mb-2 font-mono text-[10px] uppercase tracking-wider text-mute">Predicted vs actual</div>
+                <PredVsActual points={r._residuals.points} accent={ds.accent} />
+              </div>
+            )}
           </div>
         </div>
       )}

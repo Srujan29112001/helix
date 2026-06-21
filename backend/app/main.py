@@ -73,9 +73,26 @@ def _count_data_rows(path: str) -> int:
     return max(0, n - 1)  # minus header
 
 
-def _read_capped(path: str, max_rows: int = 500_000) -> tuple["pd.DataFrame", int, int]:
-    """Read a CSV, systematically down-sampling huge files so a 3M-row upload never
-    blows up memory. Records the true source size in ``df.attrs`` for transparency."""
+def _read_capped(path: str, filename: str = "", max_rows: int = 500_000) -> tuple["pd.DataFrame", int, int]:
+    """Read a tabular file (CSV / Excel / Parquet / JSON), systematically
+    down-sampling huge CSVs so a 3M-row upload never blows up memory. Records the
+    true source size in ``df.attrs`` for transparency."""
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "csv"
+    if ext in ("xlsx", "xls", "parquet", "pq", "json"):
+        if ext in ("xlsx", "xls"):
+            df = pd.read_excel(path)
+        elif ext in ("parquet", "pq"):
+            df = pd.read_parquet(path)
+        else:
+            df = pd.read_json(path)
+        cols = int(df.shape[1])
+        approx = int(len(df))
+        if approx > max_rows:
+            df = df.sample(max_rows, random_state=42)
+            df.attrs["read_note"] = f"read-sampled {len(df):,} of {approx:,} rows ({ext})"
+        df.attrs["source_rows"] = approx
+        df.attrs["source_cols"] = cols
+        return df, approx, cols
     cols = int(pd.read_csv(path, nrows=0).shape[1])
     approx = _count_data_rows(path)
     if approx <= max_rows:
@@ -234,7 +251,7 @@ async def analyze(
         with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as tmp:
             shutil.copyfileobj(file.file, tmp)
             tmp_path = tmp.name
-        df, _src_rows, _src_cols = _read_capped(tmp_path)
+        df, _src_rows, _src_cols = _read_capped(tmp_path, filename)
     except Exception as exc:  # noqa: BLE001
         err = str(exc)
 

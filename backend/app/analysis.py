@@ -275,6 +275,7 @@ def analyze_dataframe(
 
     metrics, headline, task_label = _score(is_clf, binary, y_test, preds, proba)
     verdict = _model_quality(is_clf, binary, headline, y)
+    eval_detail = _eval_detail(model, X_train, y_train, X_test, y_test, preds, proba, is_clf, classes, opt_metric)
     bars, bars_title = _importance(model, X, X_test, y_test, y, features, is_clf)
     if text_terms:  # NLP: surface themes instead of opaque TF-IDF dims
         bars = [{"label": t, "value": v} for t, v in text_terms]
@@ -332,7 +333,79 @@ def analyze_dataframe(
         "_box": insights["_box"],
         "_insights_text": insights["_insights_text"],
         "_stats_tests": stats_tests,
+        **eval_detail,
     }
+
+
+def _eval_detail(model, X_train, y_train, X_test, y_test, preds, proba, is_clf, classes, opt_metric) -> dict:
+    """Deeper model diagnostics a data scientist expects: stratified k-fold CV
+    (mean ± std — honest vs a single split), confusion matrix + per-class P/R/F1,
+    ROC + PR curves (binary), and a predicted-vs-actual plot (regression)."""
+    out: dict[str, Any] = {}
+    # ── stratified k-fold cross-validation on the tuned estimator ──
+    try:
+        from sklearn.model_selection import cross_val_score, StratifiedKFold, KFold
+        from sklearn.base import clone
+
+        n = len(X_train)
+        idx = np.arange(n)
+        if n > 8000:
+            idx = np.random.RandomState(42).choice(n, 8000, replace=False)
+        Xc, yc = X_train.iloc[idx], np.asarray(y_train)[idx]
+        k = 5 if len(Xc) >= 250 else 3
+        scoring = "roc_auc" if opt_metric == "roc_auc" else ("accuracy" if is_clf else "r2")
+        splitter = (StratifiedKFold(k, shuffle=True, random_state=42) if is_clf
+                    else KFold(k, shuffle=True, random_state=42))
+        scores = cross_val_score(clone(model), Xc, yc, cv=splitter, scoring=scoring, n_jobs=1, error_score="raise")
+        scores = np.asarray(scores, dtype=float)
+        scores = scores[~np.isnan(scores)]
+        if len(scores):
+            out["_cv"] = {"k": int(k), "metric": scoring,
+                          "mean": round(float(scores.mean()), 3), "std": round(float(scores.std()), 3),
+                          "scores": [round(float(s), 3) for s in scores]}
+    except Exception:  # noqa: BLE001
+        pass
+
+    try:
+        if is_clf:
+            from sklearn.metrics import (confusion_matrix, precision_recall_fscore_support,
+                                         roc_curve, precision_recall_curve)
+            yt = np.asarray(y_test)
+            pr = np.asarray(preds)
+            labs = sorted(set(yt.tolist()) | set(pr.tolist()))
+            names = [str(classes[i]) if i < len(classes) else str(i) for i in labs]
+            cm = confusion_matrix(yt, pr, labels=labs)
+            out["_confusion"] = {"labels": names, "matrix": cm.tolist()}
+            p, r, f, sup = precision_recall_fscore_support(yt, pr, labels=labs, zero_division=0)
+            out["_per_class"] = [
+                {"label": names[i], "precision": round(float(p[i]), 2), "recall": round(float(r[i]), 2),
+                 "f1": round(float(f[i]), 2), "support": int(sup[i])}
+                for i in range(len(names))
+            ]
+            if proba is not None and len(classes) == 2:
+                pos = np.asarray(proba)[:, 1]
+
+                def _thin(xs, ys, m=40):
+                    step = max(1, len(xs) // m)
+                    return [{"x": round(float(a), 3), "y": round(float(b), 3)} for a, b in zip(xs[::step], ys[::step])]
+
+                fpr, tpr, _ = roc_curve(yt, pos)
+                out["_roc"] = _thin(fpr, tpr)
+                rec, prc = precision_recall_curve(yt, pos)[1], precision_recall_curve(yt, pos)[0]
+                out["_pr"] = _thin(rec, prc)
+        else:
+            yt = np.asarray(y_test, dtype=float)
+            pp = np.asarray(preds, dtype=float)
+            m = len(yt)
+            sidx = np.arange(m)
+            if m > 200:
+                sidx = np.random.RandomState(42).choice(m, 200, replace=False)
+            out["_residuals"] = {
+                "points": [{"actual": round(float(yt[i]), 3), "pred": round(float(pp[i]), 3)} for i in sidx]
+            }
+    except Exception:  # noqa: BLE001
+        pass
+    return out
 
 
 def _statistics(df, target, is_clf, bars) -> list[dict]:

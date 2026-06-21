@@ -159,6 +159,12 @@ export interface RunResults {
     interpretation: string;
   }[];
   _charts?: ChartCard[] | null;
+  _cv?: { k: number; metric: string; mean: number; std: number; scores: number[] };
+  _confusion?: { labels: string[]; matrix: number[][] };
+  _per_class?: { label: string; precision: number; recall: number; f1: number; support: number }[];
+  _roc?: { x: number; y: number }[];
+  _pr?: { x: number; y: number }[];
+  _residuals?: { points: { actual: number; pred: number }[] };
   _verdict?: { level: "excellent" | "good" | "fair" | "weak"; label: string; detail: string } | null;
   _source_rows?: number;
   _source_cols?: number;

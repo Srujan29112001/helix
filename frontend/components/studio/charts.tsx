@@ -872,3 +872,100 @@ export function ChartCard({
     </div>
   );
 }
+
+/** Confusion matrix — predicted (cols) vs actual (rows), coloured by count. */
+export function ConfusionMatrix({ labels, matrix }: { labels: string[]; matrix: number[][] }) {
+  const n = labels.length;
+  const max = Math.max(1, ...matrix.flat());
+  const short = (s: string) => (s.length > 9 ? s.slice(0, 8) + "…" : s);
+  return (
+    <div className="scroll-thin overflow-auto">
+      <div className="mb-1 text-center font-mono text-[9px] uppercase tracking-wider text-mute">predicted →</div>
+      <div className="mx-auto inline-grid gap-1" style={{ gridTemplateColumns: `90px repeat(${n}, minmax(46px, 1fr))` }}>
+        <div />
+        {labels.map((l, i) => (
+          <div key={i} title={l} className="truncate px-1 py-1 text-center font-mono text-[10px] text-mute">{short(l)}</div>
+        ))}
+        {matrix.map((row, ri) => (
+          <Fragment key={ri}>
+            <div title={labels[ri]} className="flex items-center justify-end truncate py-1 pr-2 font-mono text-[10px] text-mist">{short(labels[ri])}</div>
+            {row.map((v, ci) => (
+              <div
+                key={ci}
+                title={`actual ${labels[ri]} → predicted ${labels[ci]}: ${v}`}
+                className="grid aspect-square place-items-center rounded-md font-mono text-[12px]"
+                style={{
+                  background: ri === ci ? alpha("#9ae64a", Math.max(0.08, v / max)) : alpha("#fb7185", Math.max(0.05, v / max)),
+                  color: v / max > 0.5 ? "#06080f" : "#cdd8ea",
+                }}
+              >
+                {v}
+              </div>
+            ))}
+          </Fragment>
+        ))}
+      </div>
+      <div className="mt-1 font-mono text-[9px] text-mute">↑ actual · green diagonal = correct · coral = errors</div>
+    </div>
+  );
+}
+
+/** A 0..1 curve (ROC or precision-recall) with an optional diagonal baseline. */
+export function Curve({
+  points,
+  xlabel,
+  ylabel,
+  accent = "#25d7f0",
+  diagonal = false,
+}: {
+  points: { x: number; y: number }[];
+  xlabel: string;
+  ylabel: string;
+  accent?: string;
+  diagonal?: boolean;
+}) {
+  if (!points || points.length < 2) return null;
+  const W = 320, H = 250, P = 38;
+  const sx = (x: number) => P + x * (W - P - 12);
+  const sy = (y: number) => H - P - y * (H - P - 14);
+  const line = points.map((p) => `${sx(p.x).toFixed(1)},${sy(p.y).toFixed(1)}`).join(" ");
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} className="w-full" preserveAspectRatio="xMidYMid meet">
+      {[0.25, 0.5, 0.75].map((g) => (
+        <line key={g} x1={P} y1={sy(g)} x2={W - 10} y2={sy(g)} stroke="rgba(255,255,255,0.05)" />
+      ))}
+      <line x1={P} y1={H - P} x2={W - 10} y2={H - P} stroke="rgba(255,255,255,0.18)" />
+      <line x1={P} y1={12} x2={P} y2={H - P} stroke="rgba(255,255,255,0.18)" />
+      {diagonal && <line x1={sx(0)} y1={sy(0)} x2={sx(1)} y2={sy(1)} stroke="rgba(255,255,255,0.18)" strokeDasharray="4 4" />}
+      <polyline points={line} fill="none" stroke={accent} strokeWidth="2.5" />
+      <text x={(W + P) / 2} y={H - 8} fontSize="11" fill="#9fb0c9" textAnchor="middle">{xlabel} →</text>
+      <text x={14} y={(H - P) / 2} fontSize="11" fill="#9fb0c9" textAnchor="middle" transform={`rotate(-90 14 ${(H - P) / 2})`}>↑ {ylabel}</text>
+    </svg>
+  );
+}
+
+/** Predicted vs actual for regression (points hug the diagonal when accurate). */
+export function PredVsActual({ points, accent = "#25d7f0" }: { points: { actual: number; pred: number }[]; accent?: string }) {
+  if (!points || points.length < 2) return null;
+  const all = points.flatMap((p) => [p.actual, p.pred]);
+  const lo = Math.min(...all), hi = Math.max(...all);
+  const sc = (v: number) => (hi > lo ? (v - lo) / (hi - lo) : 0.5);
+  const W = 320, H = 300, P = 40;
+  const sx = (v: number) => P + sc(v) * (W - P - 14);
+  const sy = (v: number) => H - P - sc(v) * (H - P - 14);
+  return (
+    <div>
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" preserveAspectRatio="xMidYMid meet">
+        <line x1={P} y1={H - P} x2={W - 10} y2={H - P} stroke="rgba(255,255,255,0.18)" />
+        <line x1={P} y1={12} x2={P} y2={H - P} stroke="rgba(255,255,255,0.18)" />
+        <line x1={sx(lo)} y1={sy(lo)} x2={sx(hi)} y2={sy(hi)} stroke="rgba(255,255,255,0.25)" strokeDasharray="4 4" />
+        {points.map((p, i) => (
+          <circle key={i} cx={sx(p.actual)} cy={sy(p.pred)} r="3.5" fill={accent} opacity={0.55} />
+        ))}
+        <text x={(W + P) / 2} y={H - 8} fontSize="11" fill="#9fb0c9" textAnchor="middle">actual →</text>
+        <text x={14} y={(H - P) / 2} fontSize="11" fill="#9fb0c9" textAnchor="middle" transform={`rotate(-90 14 ${(H - P) / 2})`}>↑ predicted</text>
+      </svg>
+      <div className="mt-1 font-mono text-[9px] text-mute">dashed line = perfect prediction; closer dots = better</div>
+    </div>
+  );
+}
