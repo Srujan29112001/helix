@@ -33,6 +33,9 @@ import {
   Sigma,
   TrendingUp,
   Activity,
+  Code2,
+  MessageSquare,
+  Send,
 } from "lucide-react";
 import { AGENTS, type AgentId, type Agent } from "@/lib/agents";
 import {
@@ -44,7 +47,7 @@ import {
   type LogKind,
   type RunResults,
 } from "@/lib/studio-run";
-import { isLive, streamRun, streamAnalyze, API_URL, type StreamHandlers } from "@/lib/api";
+import { isLive, streamRun, streamAnalyze, ask, exportResults, API_URL, type StreamHandlers } from "@/lib/api";
 import {
   Donut,
   Bars,
@@ -729,6 +732,13 @@ export function StudioClient() {
                       ds={ds}
                       results={liveResults ?? ds.results}
                       onDownload={downloadReport}
+                      goal={goal}
+                      live={runMode === "live"}
+                      llmConfig={{ provider, model, apiKey, temperature: parseFloat(temperature) || 0.2 }}
+                      coderCode={(logsByStage["coder"] || [])
+                        .filter((l) => l.kind === "code")
+                        .map((l) => l.text)
+                        .join("\n")}
                     />
                   </motion.div>
                 )}
@@ -936,9 +946,9 @@ function Setup({
         </div>
 
         {datasetId === "custom" && (columns.length > 0 || !!custom) && (
-          <div className={cn("mt-3 grid gap-3", taskType !== "clustering" && taskType !== "anomaly" && columns.length > 0 && "sm:grid-cols-2")}>
+          <div className={cn("mt-3 grid gap-3", taskType !== "clustering" && taskType !== "anomaly" && taskType !== "recommendation" && columns.length > 0 && "sm:grid-cols-2")}>
             {/* clustering/anomaly are unsupervised → no target column; non-CSV files (Excel/Parquet) parse on the server → Auto target */}
-            {taskType !== "clustering" && taskType !== "anomaly" && columns.length > 0 && (
+            {taskType !== "clustering" && taskType !== "anomaly" && taskType !== "recommendation" && columns.length > 0 && (
               <div className="rounded-2xl border border-white/10 bg-panel p-4">
                 <label className="font-mono text-[10px] uppercase tracking-[0.18em] text-mute">
                   Target column · what to predict
@@ -997,6 +1007,9 @@ function Setup({
                 </option>
                 <option value="survival" className="bg-ink text-mist">
                   Survival analysis
+                </option>
+                <option value="recommendation" className="bg-ink text-mist">
+                  Recommendation (similar items)
                 </option>
               </select>
             </div>
@@ -1831,18 +1844,134 @@ function TabBtn({
   );
 }
 
+/* --------------------------- What-if simulator --------------------------- */
+function WhatIfSimulator({
+  whatif,
+  accent,
+}: {
+  whatif: { feature: string; outcome: string; values: { x: number; pred: number }[] }[];
+  accent: string;
+}) {
+  const [vals, setVals] = useState<Record<string, number>>(() =>
+    Object.fromEntries(whatif.map((w) => [w.feature, w.values[Math.floor(w.values.length / 2)].x])),
+  );
+  const interp = (w: { values: { x: number; pred: number }[] }, x: number): number => {
+    const v = w.values;
+    if (x <= v[0].x) return v[0].pred;
+    if (x >= v[v.length - 1].x) return v[v.length - 1].pred;
+    for (let i = 0; i < v.length - 1; i++) {
+      if (x >= v[i].x && x <= v[i + 1].x) {
+        const t = (x - v[i].x) / (v[i + 1].x - v[i].x || 1);
+        return v[i].pred + t * (v[i + 1].pred - v[i].pred);
+      }
+    }
+    return v[v.length - 1].pred;
+  };
+  return (
+    <div className="grid gap-4 md:grid-cols-2">
+      {whatif.map((w) => {
+        const xs = w.values.map((p) => p.x);
+        const lo = xs[0], hi = xs[xs.length - 1];
+        const cur = vals[w.feature];
+        const pred = interp(w, cur);
+        const isProb = w.outcome === "probability";
+        const preds = w.values.map((p) => p.pred);
+        const plo = Math.min(...preds), phi = Math.max(...preds);
+        const W = 220, H = 44;
+        const sx = (x: number) => ((x - lo) / (hi - lo || 1)) * W;
+        const sy = (p: number) => H - ((p - plo) / (phi - plo || 1)) * (H - 8) - 4;
+        const line = w.values.map((p) => `${sx(p.x).toFixed(1)},${sy(p.pred).toFixed(1)}`).join(" ");
+        return (
+          <div key={w.feature} className="rounded-xl border border-white/10 bg-white/[0.02] p-4">
+            <div className="flex items-center justify-between">
+              <span className="truncate text-[13px] text-mist" title={w.feature}>{w.feature}</span>
+              <span className="font-mono text-[11px] text-mute">{cur.toFixed(2)}</span>
+            </div>
+            <svg viewBox={`0 0 ${W} ${H}`} className="mt-2 w-full">
+              <polyline points={line} fill="none" stroke={alpha(accent, 0.6)} strokeWidth="2" />
+              <circle cx={sx(cur)} cy={sy(pred)} r="3.5" fill={accent} />
+            </svg>
+            <input
+              type="range"
+              min={lo}
+              max={hi}
+              step={(hi - lo) / 100 || 0.01}
+              value={cur}
+              onChange={(e) => setVals((s) => ({ ...s, [w.feature]: parseFloat(e.target.value) }))}
+              className="mt-1 w-full"
+              style={{ accentColor: accent }}
+            />
+            <div className="mt-1.5 flex items-center justify-between">
+              <span className="font-mono text-[10px] uppercase tracking-wider text-mute">predicted</span>
+              <span className="font-display text-base font-semibold text-white">
+                {isProb ? `${(pred * 100).toFixed(1)}%` : pred.toFixed(2)}
+              </span>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 /* ------------------------------ Results ------------------------------ */
 function Results({
   ds,
   results,
   onDownload,
+  goal,
+  live,
+  llmConfig,
+  coderCode,
 }: {
   ds: Dataset;
   results: RunResults;
   onDownload: () => void;
+  goal: string;
+  live: boolean;
+  llmConfig: { provider: string; model: string; apiKey: string; temperature: number };
+  coderCode: string;
 }) {
   const r = results;
   const [researchOn, setResearchOn] = useState(true);
+  const [chat, setChat] = useState<{ q: string; a: string }[]>([]);
+  const [chatQ, setChatQ] = useState("");
+  const [chatBusy, setChatBusy] = useState(false);
+  const [exporting, setExporting] = useState("");
+
+  const askQuestion = async () => {
+    const q = chatQ.trim();
+    if (!q || chatBusy) return;
+    setChatBusy(true);
+    setChatQ("");
+    try {
+      const a = await ask(q, r, llmConfig);
+      setChat((c) => [...c, { q, a }]);
+    } catch {
+      setChat((c) => [...c, { q, a: "Sorry — could not reach the model. Add an AI key in the AI engine." }]);
+    } finally {
+      setChatBusy(false);
+    }
+  };
+  const doExport = async (fmt: "pptx" | "md") => {
+    setExporting(fmt);
+    try {
+      await exportResults(r, goal, ds.name, fmt);
+    } catch {
+      /* ignore */
+    } finally {
+      setExporting("");
+    }
+  };
+  const downloadCode = () => {
+    if (!coderCode) return;
+    const url = URL.createObjectURL(new Blob([coderCode], { type: "text/x-python" }));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `helix-${ds.id}-analysis.py`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
   const rows = r._rows ?? ds.rows;
   const srcRows = r._source_rows;
   const tgt = r._target ?? ds.target;
@@ -2221,6 +2350,142 @@ function Results({
         </div>
       )}
 
+      {/* model comparison — auto-selected model vs standard baselines */}
+      {r._model_compare && r._model_compare.length > 1 && (
+        <div className="rounded-2xl border border-white/10 bg-panel p-6">
+          <h3 className="mb-3 font-mono text-xs uppercase tracking-[0.16em] text-mute">
+            Model comparison · {r._model_compare[0].metric} on the held-out test set
+          </h3>
+          <div className="space-y-2.5">
+            {r._model_compare.map((m, i) => {
+              const best = Math.max(...r._model_compare!.map((x) => x.score), 0.0001);
+              return (
+                <div key={i} className="grid grid-cols-[minmax(120px,200px)_1fr_48px] items-center gap-3">
+                  <span className={cn("truncate text-[13px]", m.best ? "font-semibold text-white" : "text-mist")}>
+                    {m.model}
+                  </span>
+                  <div className="h-3 overflow-hidden rounded-full bg-white/5">
+                    <div
+                      className="h-full rounded-full"
+                      style={{
+                        width: `${Math.max(0, Math.min(1, m.score / best)) * 100}%`,
+                        background: m.best ? "#9ae64a" : `linear-gradient(90deg, ${alpha(ds.accent, 0.4)}, ${ds.accent})`,
+                      }}
+                    />
+                  </div>
+                  <span className="text-right font-mono text-[11px] text-mute">{m.score.toFixed(3)}</span>
+                </div>
+              );
+            })}
+          </div>
+          <p className="mt-3 font-mono text-[10px] text-mute">
+            Green = the model FLAML auto-selected. Baselines are fit on the same split for a fair comparison.
+          </p>
+        </div>
+      )}
+
+      {/* what-if simulator */}
+      {r._whatif && r._whatif.length > 0 && (
+        <div className="rounded-2xl border border-white/10 bg-panel p-6">
+          <div className="mb-1 flex flex-wrap items-center gap-2">
+            <Sparkles className="h-4 w-4 text-brand" />
+            <h3 className="font-mono text-xs uppercase tracking-[0.16em] text-mute">
+              What-if simulator
+            </h3>
+          </div>
+          <p className="mb-4 font-mono text-[10px] leading-relaxed text-mute">
+            Move a slider to see how the predicted {tgt} changes when that feature changes (others held at their median).
+          </p>
+          <WhatIfSimulator whatif={r._whatif} accent={ds.accent} />
+        </div>
+      )}
+
+      {/* text analysis — topics + sentiment + keywords (NLP) */}
+      {(r._topics || r._sentiment || r._keywords) && (
+        <div className="rounded-2xl border border-white/10 bg-panel p-6">
+          <h3 className="mb-4 font-mono text-xs uppercase tracking-[0.16em] text-mute">
+            Text analysis · topics &amp; sentiment
+          </h3>
+          <div className="grid gap-5 lg:grid-cols-2">
+            {r._sentiment && (
+              <div>
+                <div className="mb-2 font-mono text-[10px] uppercase tracking-wider text-mute">Sentiment</div>
+                <Pie
+                  items={[
+                    { label: "Positive", value: r._sentiment.positive },
+                    { label: "Neutral", value: r._sentiment.neutral },
+                    { label: "Negative", value: r._sentiment.negative },
+                  ]}
+                  accent="#9ae64a"
+                />
+              </div>
+            )}
+            {r._topics && r._topics.length > 0 && (
+              <div>
+                <div className="mb-2 font-mono text-[10px] uppercase tracking-wider text-mute">Topics (LDA)</div>
+                <div className="space-y-2">
+                  {r._topics.map((t, i) => (
+                    <div key={i} className="rounded-lg border border-white/10 bg-white/[0.02] p-2.5">
+                      <div className="mb-1 text-xs font-medium text-mist">{t.topic}</div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {t.words.map((w) => (
+                          <span key={w} className="rounded bg-brand/10 px-1.5 py-0.5 font-mono text-[10px] text-brand">{w}</span>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+          {r._keywords && r._keywords.length > 0 && (
+            <div className="mt-4">
+              <div className="mb-2 font-mono text-[10px] uppercase tracking-wider text-mute">Top keywords</div>
+              <div className="flex flex-wrap gap-1.5">
+                {r._keywords.map((w) => (
+                  <span key={w} className="rounded-lg border border-white/10 bg-white/[0.04] px-2 py-0.5 font-mono text-[11px] text-mist">{w}</span>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* recommendations — similar items */}
+      {r._recommend && r._recommend.items.length > 0 && (
+        <div className="rounded-2xl border border-white/10 bg-panel p-6">
+          <h3 className="mb-3 font-mono text-xs uppercase tracking-[0.16em] text-mute">
+            Recommendations · most-similar items (by {r._recommend.label_col})
+          </h3>
+          <div className="scroll-thin max-h-80 overflow-auto rounded-lg border border-white/10 bg-white/[0.02]">
+            <table className="w-full text-left text-xs">
+              <thead className="sticky top-0 bg-panel">
+                <tr className="font-mono text-[10px] uppercase tracking-wider text-mute">
+                  <th className="px-3 py-2">Item</th>
+                  <th className="px-3 py-2">Most similar (cosine)</th>
+                </tr>
+              </thead>
+              <tbody>
+                {r._recommend.items.map((it, i) => (
+                  <tr key={i} className="border-t border-white/5 align-top">
+                    <td className="max-w-[160px] truncate px-3 py-2 text-mist">{it.item}</td>
+                    <td className="px-3 py-2">
+                      <div className="flex flex-wrap gap-1.5">
+                        {it.similar.map((s, j) => (
+                          <span key={j} className="rounded-lg border border-white/10 bg-white/[0.04] px-2 py-0.5 text-[11px] text-mist">
+                            {s.name} <span className="font-mono text-[9px] text-mute">{s.score.toFixed(2)}</span>
+                          </span>
+                        ))}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
       {/* data quality + data dictionary */}
       {(r._quality || (r._profile && r._profile.length > 0)) && (
         <div className="grid gap-4 lg:grid-cols-2">
@@ -2473,6 +2738,52 @@ function Results({
         </div>
       )}
 
+      {/* ask the data — NL Q&A over the results */}
+      {live && (
+        <div className="rounded-2xl border border-white/10 bg-panel p-6">
+          <div className="mb-3 flex items-center gap-2">
+            <MessageSquare className="h-4 w-4 text-brand" />
+            <h3 className="font-mono text-xs uppercase tracking-[0.16em] text-mute">
+              Ask the data · chat about these results
+            </h3>
+          </div>
+          {chat.length > 0 && (
+            <div className="mb-3 space-y-3">
+              {chat.map((m, i) => (
+                <div key={i} className="space-y-1.5">
+                  <div className="flex justify-end">
+                    <span className="max-w-[80%] rounded-2xl rounded-br-sm bg-brand/15 px-3 py-1.5 text-sm text-mist">{m.q}</span>
+                  </div>
+                  <div className="flex justify-start">
+                    <span className="max-w-[85%] rounded-2xl rounded-bl-sm border border-white/10 bg-white/[0.03] px-3 py-1.5 text-sm leading-relaxed text-mist">{m.a}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="flex items-center gap-2 rounded-xl border border-white/10 bg-ink/70 px-3">
+            <input
+              value={chatQ}
+              onChange={(e) => setChatQ(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") askQuestion(); }}
+              placeholder={`Ask about ${tgt}… e.g. "which driver matters most and why?"`}
+              className="flex-1 bg-transparent py-2.5 text-sm text-mist outline-none placeholder:text-mute"
+            />
+            <button
+              onClick={askQuestion}
+              disabled={chatBusy || !chatQ.trim()}
+              className="shrink-0 rounded-lg bg-brand/20 p-2 text-brand transition-colors hover:bg-brand/30 disabled:opacity-40"
+              aria-label="Send"
+            >
+              {chatBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+            </button>
+          </div>
+          <p className="mt-2 font-mono text-[10px] text-mute">
+            Grounded only in this analysis&apos;s numbers (needs an AI key). It won&apos;t make things up.
+          </p>
+        </div>
+      )}
+
       {/* business report — premium, scannable layout */}
       <div className="overflow-hidden rounded-2xl border border-white/10 bg-panel">
         {/* header band */}
@@ -2504,10 +2815,30 @@ function Results({
               </span>
             )}
           </div>
-          <Button variant="secondary" size="sm" onClick={onDownload}>
-            <Download className="h-4 w-4" />
-            Download
-          </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button variant="secondary" size="sm" onClick={onDownload}>
+              <Download className="h-4 w-4" />
+              .txt
+            </Button>
+            {live && (
+              <>
+                <Button variant="secondary" size="sm" onClick={() => doExport("pptx")} disabled={!!exporting}>
+                  <FileText className="h-4 w-4" />
+                  {exporting === "pptx" ? "…" : ".pptx"}
+                </Button>
+                <Button variant="secondary" size="sm" onClick={() => doExport("md")} disabled={!!exporting}>
+                  <FileText className="h-4 w-4" />
+                  {exporting === "md" ? "…" : ".md"}
+                </Button>
+              </>
+            )}
+            {coderCode && (
+              <Button variant="secondary" size="sm" onClick={downloadCode}>
+                <Code2 className="h-4 w-4" />
+                .py
+              </Button>
+            )}
+          </div>
         </div>
 
         {/* report meta strip */}

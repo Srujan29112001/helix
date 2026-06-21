@@ -47,6 +47,52 @@ export interface StreamHandlers {
   onDone: () => void;
 }
 
+/** Ask a natural-language question about an analysis (grounded in its results). */
+export async function ask(
+  question: string,
+  results: RunResults,
+  llm: LLMConfig,
+): Promise<string> {
+  const res = await fetch(`${API_URL}/api/ask`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      question,
+      results,
+      provider: llm.provider,
+      model: llm.model,
+      apiKey: llm.apiKey,
+      temperature: llm.temperature,
+      llms: llm.llms,
+    }),
+  });
+  if (!res.ok) throw new Error(`ask failed: ${res.status}`);
+  const d = await res.json();
+  return (d.answer as string) ?? "";
+}
+
+/** Export the results as a .pptx deck or .md report and trigger a download. */
+export async function exportResults(
+  results: RunResults,
+  goal: string,
+  dataset: string,
+  format: "pptx" | "md",
+): Promise<void> {
+  const res = await fetch(`${API_URL}/api/export`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ results, goal, dataset, format }),
+  });
+  if (!res.ok) throw new Error(`export failed: ${res.status}`);
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `helix-${(dataset || "analysis").replace(/[^a-z0-9_-]/gi, "") || "analysis"}.${format}`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 /** Reads a fetch Response as a Server-Sent Events stream and dispatches handlers. */
 async function consumeSSE(res: Response, handlers: StreamHandlers): Promise<void> {
   if (!res.ok || !res.body) throw new Error(`request failed: ${res.status}`);

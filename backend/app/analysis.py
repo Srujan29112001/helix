@@ -120,6 +120,8 @@ def analyze_dataframe(
         return _timeseries(df, target, src_rows, src_cols)
     if task == "survival":
         return _survival(df, target, src_rows, src_cols)
+    if task == "recommendation":
+        return _recommend(df, src_rows, src_cols)
     target = target.strip()
     if target not in df.columns:
         raise ValueError(f"target column '{target}' not found in dataset")
@@ -153,8 +155,10 @@ def analyze_dataframe(
         and X[c].nunique(dropna=False) > max(30, 0.5 * len(X))
     ]
     other = [c for c in X.columns if c not in hicard]
+    nlp_extras: dict[str, Any] = {}
     if hicard and (task == "nlp" or not other):
         textcol = max(hicard, key=lambda c: X[c].dropna().astype(str).str.len().mean())
+        nlp_extras = _nlp_extras(X[textcol])  # topics + sentiment + keywords
         X, text_terms = _vectorize_text(X, textcol)
         fixes.append(f"vectorized text column '{textcol}' with TF-IDF")
     elif hicard:
@@ -237,13 +241,12 @@ def analyze_dataframe(
         if len(X_train) > 100_000:
             fit_kwargs["estimator_list"] = ["lgbm", "xgboost"]
         else:
-            # broaden the search: tree ensembles + linear + KNN baselines, and let
-            # FLAML stack the best learners into an ensemble on smaller data.
+            # broaden the search: tree ensembles + linear + KNN baselines. (FLAML's
+            # stacked ensemble is intentionally NOT enabled — its base learners can
+            # train on different feature subsets and crash predict on wide/TF-IDF data.)
             fit_kwargs["estimator_list"] = ["lgbm", "xgboost", "rf", "extra_tree", "kneighbor"] + (
                 ["lrl1", "lrl2"] if is_clf else ["enet"]
             )
-            if len(X_train) <= 30_000:
-                fit_kwargs["ensemble"] = True
         automl.fit(
             X_train,
             y_train,
@@ -294,6 +297,8 @@ def analyze_dataframe(
     metrics, headline, task_label = _score(is_clf, binary, y_test, preds, proba)
     verdict = _model_quality(is_clf, binary, headline, y)
     eval_detail = _eval_detail(model, X_train, y_train, X_test, y_test, preds, proba, is_clf, classes, opt_metric)
+    model_compare = _model_comparison(X_train, y_train, X_test, y_test, is_clf, binary, opt_metric, best_model, headline["fraction"])
+    whatif = _whatif(model, X, features, is_clf, binary, classes)
     bars, bars_title = _importance(model, X, X_test, y_test, y, features, is_clf)
     if text_terms:  # NLP: surface themes instead of opaque TF-IDF dims
         bars = [{"label": t, "value": v} for t, v in text_terms]
@@ -351,6 +356,11 @@ def analyze_dataframe(
         "_box": insights["_box"],
         "_insights_text": insights["_insights_text"],
         "_stats_tests": stats_tests,
+        "_model_compare": model_compare,
+        "_whatif": whatif,
+        "_topics": nlp_extras.get("topics") or None,
+        "_sentiment": nlp_extras.get("sentiment"),
+        "_keywords": nlp_extras.get("keywords") or None,
         **eval_detail,
     }
 
@@ -572,6 +582,150 @@ def _statistics(df, target, is_clf, bars) -> list[dict]:
     # most significant first
     out.sort(key=lambda r: (r["p"], -r["effect"]))
     return out[:10]
+
+
+_POS_WORDS = {"good", "great", "love", "loved", "excellent", "amazing", "best", "perfect", "happy",
+              "recommend", "awesome", "fantastic", "wonderful", "nice", "fast", "easy", "quality",
+              "comfortable", "beautiful", "favorite", "worth", "smooth", "pleased", "satisfied"}
+_NEG_WORDS = {"bad", "worst", "hate", "hated", "terrible", "awful", "poor", "broken", "slow",
+              "disappointed", "waste", "horrible", "never", "problem", "refund", "damaged", "cheap",
+              "useless", "annoying", "expensive", "uncomfortable", "wrong", "stopped", "defective"}
+
+
+def _nlp_extras(texts: pd.Series) -> dict:
+    """Topic modelling (LDA), keyword extraction and a lexicon sentiment split for
+    a free-text column — the analyses a data scientist runs on text."""
+    out: dict = {"topics": [], "sentiment": None, "keywords": []}
+    s = texts.dropna().astype(str)
+    if len(s) < 10:
+        return out
+    try:
+        from sklearn.feature_extraction.text import CountVectorizer
+        from sklearn.decomposition import LatentDirichletAllocation
+
+        cv = CountVectorizer(max_features=500, stop_words="english", min_df=2)
+        dtm = cv.fit_transform(s)
+        vocab = cv.get_feature_names_out()
+        if dtm.shape[1] >= 4:
+            k = min(5, max(2, dtm.shape[0] // 60))
+            lda = LatentDirichletAllocation(n_components=k, random_state=42, max_iter=10, learning_method="online")
+            lda.fit(dtm)
+            for i, comp in enumerate(lda.components_):
+                words = [str(vocab[j]) for j in comp.argsort()[::-1][:6]]
+                out["topics"].append({"topic": f"Topic {i + 1}", "words": words})
+            freqs = np.asarray(dtm.sum(axis=0)).ravel()
+            out["keywords"] = [str(vocab[j]) for j in freqs.argsort()[::-1][:12]]
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        pos = neg = neu = 0
+        for t in s:
+            w = set(t.lower().split())
+            p, n = len(w & _POS_WORDS), len(w & _NEG_WORDS)
+            if p > n:
+                pos += 1
+            elif n > p:
+                neg += 1
+            else:
+                neu += 1
+        tot = pos + neg + neu or 1
+        out["sentiment"] = {"positive": round(pos / tot, 3), "neutral": round(neu / tot, 3),
+                            "negative": round(neg / tot, 3)}
+    except Exception:  # noqa: BLE001
+        pass
+    return out
+
+
+def _model_comparison(X_train, y_train, X_test, y_test, is_clf, binary, opt_metric, best_name, best_value) -> list:
+    """Quickly fit a few standard baselines and score them on the same held-out test
+    set, so the user sees how the auto-selected model stacks up."""
+    out = []
+    try:
+        n = len(X_train)
+        idx = np.arange(n)
+        if n > 8000:
+            idx = np.random.RandomState(42).choice(n, 8000, replace=False)
+        Xt, yt = X_train.iloc[idx], np.asarray(y_train)[idx]
+        if is_clf:
+            from sklearn.linear_model import LogisticRegression
+            from sklearn.ensemble import RandomForestClassifier
+            from sklearn.neighbors import KNeighborsClassifier
+            from sklearn.naive_bayes import GaussianNB
+            from sklearn.metrics import roc_auc_score, accuracy_score
+
+            cands = {"Logistic Regression": LogisticRegression(max_iter=300),
+                     "Random Forest": RandomForestClassifier(n_estimators=120, random_state=42, n_jobs=1),
+                     "K-Nearest Neighbors": KNeighborsClassifier(),
+                     "Naive Bayes": GaussianNB()}
+            metric = "ROC-AUC" if (opt_metric == "roc_auc" and binary) else "Accuracy"
+            for name, m in cands.items():
+                try:
+                    m.fit(Xt, yt)
+                    if metric == "ROC-AUC":
+                        sc = roc_auc_score(y_test, m.predict_proba(X_test)[:, 1])
+                    else:
+                        sc = accuracy_score(y_test, m.predict(X_test))
+                    out.append({"model": name, "score": round(float(sc), 3), "metric": metric})
+                except Exception:  # noqa: BLE001
+                    continue
+        else:
+            from sklearn.linear_model import Ridge
+            from sklearn.ensemble import RandomForestRegressor
+            from sklearn.neighbors import KNeighborsRegressor
+            from sklearn.metrics import r2_score
+
+            cands = {"Ridge": Ridge(), "Random Forest": RandomForestRegressor(n_estimators=120, random_state=42, n_jobs=1),
+                     "K-Nearest Neighbors": KNeighborsRegressor()}
+            metric = "R²"
+            for name, m in cands.items():
+                try:
+                    m.fit(Xt, yt)
+                    out.append({"model": name, "score": round(float(r2_score(y_test, m.predict(X_test))), 3), "metric": metric})
+                except Exception:  # noqa: BLE001
+                    continue
+        out.append({"model": f"{best_name} (auto-selected)", "score": round(float(best_value), 3),
+                    "metric": out[0]["metric"] if out else ("ROC-AUC" if is_clf else "R²"), "best": True})
+        out.sort(key=lambda d: -d["score"])
+    except Exception:  # noqa: BLE001
+        return []
+    return out
+
+
+def _whatif(model, X, features, is_clf, binary, classes, n_feats=4, grid=11) -> list | None:
+    """Precompute 1-D partial-dependence curves for the top features: vary one
+    feature across its range (holding the rest at the median) and record the model's
+    prediction. Powers a live 'what-if' simulator with zero extra server calls."""
+    if is_clf and not binary:
+        return None
+    try:
+        base = X.median(numeric_only=True)
+
+        def predict(M):
+            if is_clf:
+                try:
+                    return model.predict_proba(M)[:, 1]
+                except Exception:  # noqa: BLE001
+                    return model.predict(M).astype(float)
+            return model.predict(M)
+
+        var = X.var(numeric_only=True).fillna(0.0).sort_values(ascending=False)
+        cols = [c for c in var.index][:n_feats]
+        out = []
+        for c in cols:
+            col = pd.to_numeric(X[c], errors="coerce").dropna()
+            lo, hi = float(col.quantile(0.05)), float(col.quantile(0.95))
+            if hi <= lo:
+                continue
+            xs = np.linspace(lo, hi, grid)
+            rows = pd.DataFrame([base.to_dict()] * grid)[X.columns]
+            rows[c] = xs
+            preds = predict(rows[X.columns])
+            out.append({"feature": str(c),
+                        "outcome": "probability" if is_clf else "value",
+                        "values": [{"x": round(float(x), 4), "pred": round(float(p), 4)} for x, p in zip(xs, preds)]})
+        return out or None
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _score(is_clf, binary, y_test, preds, proba):
@@ -1547,6 +1701,62 @@ def _survival(df: pd.DataFrame, target: str, src_rows=None, src_cols=None) -> di
         "_source_rows": int(src_rows or len(df)), "_source_cols": int(src_cols or df.shape[1]),
         "_km": km,
         "_drivers": [{"feature": h["label"], "importance": round(h["value"], 2), "direction": h["sign"]} for h in hazards[:4]],
+    }
+
+
+def _recommend(df: pd.DataFrame, src_rows=None, src_cols=None) -> dict[str, Any]:
+    """Content-based recommender: cosine similarity over each item's feature vector,
+    returning the most similar items for a sample of rows."""
+    from sklearn.metrics.pairwise import cosine_similarity
+    from sklearn.preprocessing import StandardScaler
+
+    fixes: list[str] = []
+    if df.attrs.get("read_note"):
+        fixes.append(df.attrs["read_note"])
+    work = df.copy()
+    if len(work) > 5000:
+        work = work.sample(5000, random_state=42)
+        fixes.append("sampled 5,000 items")
+    label_col = None
+    for c in work.columns:
+        if not pd.api.types.is_numeric_dtype(work[c]) and 3 < work[c].nunique(dropna=True) <= len(work):
+            label_col = c
+            break
+    labels = work[label_col].astype(str).tolist() if label_col else [f"item {i + 1}" for i in range(len(work))]
+    Xn = _numeric_matrix(work, drop=label_col)
+    if Xn.shape[1] < 1:
+        raise ValueError("recommendations need at least one numeric feature per item")
+    Xs = StandardScaler().fit_transform(Xn)
+    sim = cosine_similarity(Xs)
+    np.fill_diagonal(sim, -2.0)
+    recs = []
+    for i in range(min(10, len(labels))):
+        top = sim[i].argsort()[::-1][:5]
+        recs.append({"item": labels[i],
+                     "similar": [{"name": labels[j], "score": round(float(sim[i][j]), 3)} for j in top if sim[i][j] > -2]})
+    var = Xn.var(numeric_only=True).fillna(0.0).sort_values(ascending=False)
+    vmx = var.max() or 1.0
+    bars = [{"label": str(c), "value": float(max(0.08, var[c] / vmx))} for c in var.index[:6]]
+    return {
+        "taskLabel": "Recommendation (content-based)", "bestModel": "Cosine similarity",
+        "headline": {"value": f"{len(labels):,}", "label": "items"},
+        "metrics": [{"label": "Items", "value": f"{len(labels):,}"}, {"label": "Features", "value": str(Xn.shape[1])},
+                    {"label": "Label col", "value": str(label_col or "row index")}],
+        "barsTitle": "Features that drive similarity", "bars": bars,
+        "distTitle": "", "dist": [],
+        "report": [
+            f"A content-based recommender compared {len(labels):,} items on {Xn.shape[1]} numeric features using cosine "
+            f"similarity — items with similar feature profiles are recommended for one another.",
+            f"Similarity is driven most by {var.index[0]}" + (f" and {var.index[1]}" if len(var) > 1 else "")
+            + ", so those features most determine which items are considered alike.",
+            "Use the similar-item lists for 'customers who liked X also like…' style recommendations.",
+        ],
+        "recommendation": f"Surface the top-similar items per item; tune relevance by weighting {var.index[0]}.",
+        "_fixes": fixes, "_features": list(Xn.columns), "_target": "(unsupervised)",
+        "_rows": int(len(work)), "_cols": int(df.shape[1]),
+        "_source_rows": int(src_rows or len(df)), "_source_cols": int(src_cols or df.shape[1]),
+        "_recommend": {"label_col": label_col or "row index", "items": recs},
+        "_drivers": [{"feature": b["label"], "importance": round(b["value"], 2), "direction": 0} for b in bars[:4]],
     }
 
 

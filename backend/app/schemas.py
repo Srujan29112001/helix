@@ -15,3 +15,20 @@ class RunRequest(BaseModel):
     temperature: float | None = None
     # optional per-role config: {"default": {...}, "<role>": {provider, model, api_key, temperature}}
     llms: dict | None = None
+
+
+class AskRequest(BaseModel):
+    question: str
+    results: dict = {}
+    provider: str = "groq"
+    model: str | None = None
+    apiKey: str | None = None
+    temperature: float | None = None
+    llms: dict | None = None
+
+
+class ExportRequest(BaseModel):
+    results: dict = {}
+    goal: str = ""
+    dataset: str = "dataset"
+    format: str = "pptx"  # "pptx" | "md"

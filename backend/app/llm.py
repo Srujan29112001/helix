@@ -98,6 +98,12 @@ _SYSTEM = {
         "relevant benchmarks, regulations or best practices. Ground claims in the provided search snippets; if no "
         "results are available, use general domain knowledge and say it is not live. Be specific — no fluff, no markdown."
     ),
+    "analyst": (
+        "You are a data scientist answering questions about an analysis that has ALREADY been run. "
+        "You are given a structured summary of the results (metrics, drivers, segments, statistics, model quality). "
+        "Answer the user's question in 2-4 sentences, grounded ONLY in that summary — cite the specific numbers. "
+        "If the answer is not in the summary, say so plainly rather than guessing. Be concrete and plain-spoken; no markdown."
+    ),
     "visualizer": (
         "You are a data-visualization expert choosing the BEST charts for a specific dataset, goal and industry. "
         "Output ONLY a JSON array (no prose, no markdown fences) of at most 8 chart specs, ordered most to least "
@@ -234,6 +240,11 @@ def _build_user_prompt(role: str, context: dict[str, Any]) -> str:
             f"Model's key drivers: {context.get('drivers','')}\n"
             f"Web search results:\n{src}\n"
             "Write the 3-4 sentence external research synthesis."
+        )
+    if role == "analyst":
+        return (
+            "Analysis summary:\n" + str(context.get("summary", "")) + "\n\n"
+            "Question: " + str(context.get("question", "")) + "\nAnswer:"
         )
     if role == "visualizer":
         prof = context.get("profile", []) or []

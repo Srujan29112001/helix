@@ -18,14 +18,15 @@ import pandas as pd
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 
 from .datasets import dataset_summaries, get_dataset
 from .events import build_events
 from .llm import set_llm_override
 from .pipeline import run_pipeline
 from .real_run import run_real
-from .schemas import RunRequest
+from .schemas import AskRequest, ExportRequest, RunRequest
+from .llm import get_llm
 
 # Load backend/.env (e.g. Groq key) if present.
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
@@ -322,3 +323,71 @@ async def prompts() -> dict:
         },
         "sandbox": _SANDBOX_INFO,
     }
+
+
+def _summarize_results(r: dict) -> str:
+    """Compact text summary of a results dict for the analyst Q&A grounding."""
+    if not isinstance(r, dict):
+        return ""
+    h = r.get("headline", {}) or {}
+    parts = [
+        f"Task: {r.get('taskLabel', '?')}. Best model: {r.get('bestModel', '?')}. "
+        f"Headline: {h.get('value', '')} {h.get('label', '')}.",
+        "Metrics: " + ", ".join(f"{m.get('label')} {m.get('value')}" for m in (r.get("metrics") or [])),
+        "Top drivers: " + ", ".join(
+            f"{b.get('label')} (importance {round(float(b.get('value', 0)), 2)}"
+            + (", raises" if b.get("sign", 0) and b["sign"] > 0 else ", lowers" if b.get("sign", 0) and b["sign"] < 0 else "")
+            + ")" for b in (r.get("bars") or [])[:6]),
+    ]
+    if r.get("distTitle"):
+        parts.append(f"{r['distTitle']}: " + ", ".join(
+            f"{d.get('label')} {d.get('display')}" for d in (r.get("dist") or [])[:6]))
+    if r.get("_stats_tests"):
+        parts.append("Significance: " + "; ".join(
+            f"{t.get('feature')} {t.get('test')} p={'<0.001' if t.get('p', 1) < 0.001 else round(t.get('p', 1), 3)}"
+            + (" (sig)" if t.get("significant") else " (n.s.)") for t in r["_stats_tests"][:6]))
+    if r.get("_cv"):
+        cv = r["_cv"]
+        parts.append(f"{cv.get('k')}-fold CV {cv.get('metric')}: {cv.get('mean')} ± {cv.get('std')}.")
+    v = r.get("_verdict") or {}
+    if v:
+        parts.append(f"Model quality: {v.get('label')} — {v.get('detail')}")
+    if r.get("_corr"):
+        parts.append("Correlations: " + ", ".join(f"{c.get('a')}~{c.get('b')} r={c.get('r')}" for c in r["_corr"][:5]))
+    if r.get("recommendation"):
+        parts.append("Recommendation: " + str(r["recommendation"]))
+    return "\n".join(p for p in parts if p)
+
+
+@app.post("/api/ask")
+async def ask(req: AskRequest) -> dict:
+    """Answer a natural-language question about an analysis, grounded in its results."""
+    set_llm_override(_llm_config(req.llms, req.provider, req.model, req.apiKey,
+                                 req.temperature if req.temperature is not None else "0.2"))
+    llm = get_llm("analyst")
+    if getattr(llm, "is_mock", True):
+        return {"answer": "Connect an AI key in the Studio's AI engine to chat about your results."}
+    summary = _summarize_results(req.results)
+    try:
+        answer = await llm.acomplete("analyst", {"question": req.question, "summary": summary})
+    except Exception as exc:  # noqa: BLE001
+        return {"answer": "Could not reach the model: " + str(exc)}
+    return {"answer": (answer or "").strip()}
+
+
+@app.post("/api/export")
+async def export(req: ExportRequest) -> Response:
+    """Export the results as a PowerPoint deck (.pptx) or a Markdown report."""
+    from . import export as exporter
+
+    safe = "".join(c for c in (req.dataset or "analysis") if c.isalnum() or c in "-_") or "analysis"
+    if req.format == "md":
+        data = exporter.build_markdown(req.results, req.goal, req.dataset)
+        return Response(content=data, media_type="text/markdown",
+                        headers={"Content-Disposition": f'attachment; filename="helix-{safe}.md"'})
+    data = exporter.build_pptx(req.results, req.goal, req.dataset)
+    return Response(
+        content=data,
+        media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        headers={"Content-Disposition": f'attachment; filename="helix-{safe}.pptx"'},
+    )

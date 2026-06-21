@@ -174,6 +174,12 @@ export interface RunResults {
     date_col: string | null;
   };
   _km?: { t: number; s: number }[];
+  _model_compare?: { model: string; score: number; metric: string; best?: boolean }[];
+  _topics?: { topic: string; words: string[] }[] | null;
+  _sentiment?: { positive: number; neutral: number; negative: number } | null;
+  _keywords?: string[] | null;
+  _recommend?: { label_col: string; items: { item: string; similar: { name: string; score: number }[] }[] } | null;
+  _whatif?: { feature: string; outcome: string; values: { x: number; pred: number }[] }[] | null;
   _verdict?: { level: "excellent" | "good" | "fair" | "weak"; label: string; detail: string } | null;
   _source_rows?: number;
   _source_cols?: number;
