@@ -7,6 +7,11 @@
 >
 > Capstone project · IIIT-H. ("Helix" is a working name — easy to change.)
 
+![CI](https://github.com/Srujan29112001/helix/actions/workflows/ci.yml/badge.svg)
+
+> **Quality:** a `pytest` suite covers every task type + the engine helpers, and a
+> GitHub Actions workflow runs the tests, typecheck, and production build on every push.
+
 ---
 
 ## 1. What is this project?
