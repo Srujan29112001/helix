@@ -121,10 +121,11 @@ class OpenAICompatibleLLM(LLMProvider):
 
     is_mock = False
 
-    def __init__(self, base_url: str, api_key: str, model: str):
+    def __init__(self, base_url: str, api_key: str, model: str, temperature: float = 0.2):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.model = model
+        self.temperature = temperature
 
     async def acomplete(self, role: str, context: dict[str, Any]) -> str:
         import httpx
@@ -136,7 +137,7 @@ class OpenAICompatibleLLM(LLMProvider):
                 {"role": "system", "content": _SYSTEM.get(role, "You are a helpful assistant.")},
                 {"role": "user", "content": user},
             ],
-            "temperature": 0.2,
+            "temperature": self.temperature,
         }
         headers = {"Content-Type": "application/json"}
         if self.api_key:
@@ -155,10 +156,11 @@ class AnthropicLLM(LLMProvider):
 
     is_mock = False
 
-    def __init__(self, base_url: str, api_key: str, model: str):
+    def __init__(self, base_url: str, api_key: str, model: str, temperature: float = 0.2):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.model = model
+        self.temperature = temperature
 
     async def acomplete(self, role: str, context: dict[str, Any]) -> str:
         import httpx
@@ -166,6 +168,7 @@ class AnthropicLLM(LLMProvider):
         payload = {
             "model": self.model,
             "max_tokens": 1024,
+            "temperature": self.temperature,
             "system": _SYSTEM.get(role, "You are a helpful assistant."),
             "messages": [{"role": "user", "content": _build_user_prompt(role, context)}],
         }
@@ -275,15 +278,23 @@ _DEFAULT_MODEL = {
 }
 
 
-def make_llm(provider: str, model: str | None, api_key: str | None) -> LLMProvider:
-    """Build a provider from an explicit (provider, model, key) — e.g. sent from the UI."""
+def _clamp_temp(temperature) -> float:
+    try:
+        return max(0.0, min(2.0, float(temperature)))
+    except (TypeError, ValueError):
+        return 0.2
+
+
+def make_llm(provider: str, model: str | None, api_key: str | None, temperature: float = 0.2) -> LLMProvider:
+    """Build a provider from an explicit (provider, model, key, temperature) — e.g. sent from the UI."""
     if not api_key:
         return MockLLM()
     base, kind = PROVIDERS.get(provider, PROVIDERS["groq"])
     model = model or _DEFAULT_MODEL.get(provider, "llama-3.3-70b-versatile")
+    temp = _clamp_temp(temperature)
     if kind == "anthropic":
-        return AnthropicLLM(base, api_key, model)
-    return OpenAICompatibleLLM(base, api_key, model)
+        return AnthropicLLM(base, api_key, model, temp)
+    return OpenAICompatibleLLM(base, api_key, model, temp)
 
 
 # Per-request override, set by the API endpoint from the UI's config.
@@ -315,7 +326,11 @@ def get_llm(role: str) -> LLMProvider:
     cfg = _override.get() or {}
     rc = cfg.get(role) or cfg.get("default")
     if rc and rc.get("api_key"):
-        return make_llm(rc.get("provider") or "groq", rc.get("model"), rc["api_key"])
+        # temperature: role-specific, else the default entry's, else 0.2
+        temp = rc.get("temperature")
+        if temp is None:
+            temp = (cfg.get("default") or {}).get("temperature", 0.2)
+        return make_llm(rc.get("provider") or "groq", rc.get("model"), rc["api_key"], temp)
     base_url, api_key, model = _resolve(role)
     if base_url or api_key:
         return OpenAICompatibleLLM(

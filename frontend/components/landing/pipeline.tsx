@@ -118,7 +118,7 @@ export function Pipeline() {
             eyebrow="The pipeline"
             title={
               <>
-                Seven agents.{" "}
+                Nine agents.{" "}
                 <span className="text-gradient">One autonomous workflow.</span>
               </>
             }

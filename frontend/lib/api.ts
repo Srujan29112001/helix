@@ -10,8 +10,9 @@ export interface LLMConfig {
   provider?: string;
   model?: string;
   apiKey?: string;
-  /** optional per-role config: { default: {...}, coder: {provider, model, api_key}, ... } */
-  llms?: Record<string, { provider?: string; model?: string; api_key?: string }>;
+  temperature?: number;
+  /** optional per-role config: { default: {...}, coder: {provider, model, api_key, temperature}, ... } */
+  llms?: Record<string, { provider?: string; model?: string; api_key?: string; temperature?: number }>;
 }
 
 export interface RunRequest extends LLMConfig {
@@ -110,6 +111,7 @@ export async function streamAnalyze(
   form.append("e2bKey", req.e2bKey ?? "");
   form.append("context", req.context ?? "");
   form.append("llms", req.llms ? JSON.stringify(req.llms) : "");
+  form.append("temperature", String(req.temperature ?? 0.2));
   const res = await fetch(`${API_URL}/api/analyze`, {
     method: "POST",
     body: form,

@@ -28,6 +28,28 @@ def _is_classification(y: pd.Series) -> bool:
     return y.nunique() <= 15
 
 
+_TARGET_NAMES = {
+    "target", "label", "labels", "class", "outcome", "y", "result",
+    "churn", "default", "fraud", "survived", "price", "sales", "revenue",
+}
+
+
+def _auto_target(df: pd.DataFrame) -> str:
+    """Pick a sensible target column when the user chooses 'Auto-detect': prefer a
+    column with a common target name, else a low-cardinality categorical (a likely
+    label), else the last column (the usual spreadsheet convention)."""
+    cols = list(df.columns)
+    for c in cols:
+        if str(c).strip().lower() in _TARGET_NAMES:
+            return c
+    # a non-numeric column with few distinct values is a likely class label
+    for c in reversed(cols):
+        s = df[c]
+        if not pd.api.types.is_numeric_dtype(s) and 1 < s.nunique(dropna=True) <= 10:
+            return c
+    return cols[-1] if cols else ""
+
+
 def clean(df: pd.DataFrame, target: str) -> tuple[pd.DataFrame, list[str]]:
     fixes: list[str] = []
     df = df.copy()

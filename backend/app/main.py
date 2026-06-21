@@ -93,9 +93,10 @@ def _read_capped(path: str, max_rows: int = 500_000) -> tuple["pd.DataFrame", in
     return df, approx, cols
 
 
-def _llm_config(llms, provider, model, api_key) -> dict | None:
+def _llm_config(llms, provider, model, api_key, temperature="0.2") -> dict | None:
     """Build the per-role LLM config from an explicit ``llms`` map (dict or JSON
-    string) or fall back to the legacy single provider/model/apiKey fields."""
+    string) or fall back to the legacy single provider/model/apiKey fields.
+    Each role config may carry its own ``temperature``."""
     if isinstance(llms, str) and llms.strip():
         try:
             llms = json.loads(llms)
@@ -104,7 +105,8 @@ def _llm_config(llms, provider, model, api_key) -> dict | None:
     if isinstance(llms, dict) and llms:
         return llms
     if api_key:
-        return {"default": {"provider": provider or "groq", "model": model, "api_key": api_key}}
+        return {"default": {"provider": provider or "groq", "model": model,
+                            "api_key": api_key, "temperature": temperature}}
     return None
 
 
@@ -136,7 +138,8 @@ async def _stream(req: RunRequest):
         await queue.put({"t": "event", "stage": stage, "status": status, "log": log})
 
     async def driver() -> None:
-        set_llm_override(_llm_config(req.llms, req.provider, req.model, req.apiKey))
+        set_llm_override(_llm_config(req.llms, req.provider, req.model, req.apiKey,
+                                     req.temperature if req.temperature is not None else "0.2"))
         try:
             results = await run_pipeline(req.datasetId, req.goal, req.fileName, emit)
             await queue.put({"t": "result", "results": results})
@@ -180,6 +183,7 @@ async def _analyze_stream(
     e2b_key: str,
     context: str,
     llms: str,
+    temperature: str = "0.2",
 ):
     queue: asyncio.Queue = asyncio.Queue()
 
@@ -187,7 +191,7 @@ async def _analyze_stream(
         await queue.put({"t": "event", "stage": stage, "status": status, "log": log})
 
     async def driver() -> None:
-        set_llm_override(_llm_config(llms, provider, model, api_key))
+        set_llm_override(_llm_config(llms, provider, model, api_key, temperature))
         try:
             results = await run_real(df, target, goal, task, emit, e2b_key=e2b_key, context=context)
             await queue.put({"t": "result", "results": results})
@@ -222,6 +226,7 @@ async def analyze(
     e2bKey: str = Form(""),
     context: str = Form(""),
     llms: str = Form(""),
+    temperature: str = Form("0.2"),
 ) -> StreamingResponse:
     filename = file.filename or "uploaded.csv"
     tmp_path = None
@@ -249,8 +254,54 @@ async def analyze(
 
     return StreamingResponse(
         _analyze_stream(
-            df, target, goal, task, filename, provider, model, apiKey, e2bKey, context, llms
+            df, target, goal, task, filename, provider, model, apiKey, e2bKey, context, llms, temperature
         ),
         media_type="text/event-stream",
         headers=_SSE_HEADERS,
     )
+
+
+# ── Transparency: expose the exact prompts + per-agent logic the backend runs ──
+_AGENT_LOGIC: dict[str, str] = {
+    "planner": "Reasons step-by-step (chain-of-thought) over the goal + dataset schema to emit a concise numbered analysis plan.",
+    "coder": "Writes real pandas/scikit-learn Python for the plan, grounded in docs retrieved from the ChromaDB RAG store so it hallucinates fewer APIs.",
+    "executor": "Runs the generated code in a sandbox and captures stdout + full tracebacks. Engine: E2B microVM when an E2B key is set (true VM isolation + hard timeout), otherwise an in-process RestrictedPython jail.",
+    "critic": "Reads the traceback from a failed run, diagnoses the cause, and rewrites the FULL corrected script — looping with the Executor up to 5 times until the code runs clean (self-correcting execution).",
+    "automl": "FLAML searches estimators (LightGBM, XGBoost, Random Forest, Extra Trees, …) under a time budget that scales with data size and returns the best-tuned model by the chosen metric.",
+    "explainer": "Computes SHAP values (TreeExplainer) to rank global feature importance AND its direction (raises vs lowers the target), with a permutation-importance fallback.",
+    "visualizer": "Chooses the BEST chart type per finding for this dataset/context and may request safe aggregations — but the engine fills every number from the real data, so a chart can never show a fabricated value (invalid specs are dropped).",
+    "researcher": "Builds queries from the goal, context tags and the model's drivers, runs live web search (Tavily if keyed, else keyless DuckDuckGo), and synthesises real-world domain context with cited sources.",
+    "reporter": "Writes the board-ready business narrative + a prioritised recommendation from the metrics, drivers, segments, data quality, the model-quality verdict and (optionally) the live research — honestly flagging weak signal.",
+}
+
+_SANDBOX_INFO = {
+    "default_engine": "RestrictedPython (in-process AST jail) — used when no E2B key is set",
+    "hardened_engine": "E2B microVM (remote, true VM isolation + hard timeout) — used when an E2B key is set",
+    "allowed_imports": ["pandas", "numpy", "math", "statistics", "random", "datetime",
+                        "collections", "itertools", "functools", "re", "json", "sklearn", "scipy"],
+    "blocked": ["open / file I/O", "os, sys, socket, subprocess", "any import outside the allow-list",
+                "dunder / underscore attribute access (sandbox-escape vector)", "network access"],
+    "captured": "stdout (via PrintCollector) and the last line of any traceback, returned as SandboxResult(ok, stdout, error, engine).",
+}
+
+
+@app.get("/api/prompts")
+async def prompts() -> dict:
+    """Return the exact system prompt + plain-English logic for every agent, so the
+    Studio can show users what is really running behind each stage."""
+    from .llm import _SYSTEM
+
+    roles = ["planner", "coder", "executor", "critic", "automl",
+             "explainer", "visualizer", "researcher", "reporter"]
+    llm_roles = {"planner", "coder", "critic", "reporter", "researcher", "visualizer"}
+    return {
+        "agents": {
+            r: {
+                "llm": r in llm_roles,
+                "system": _SYSTEM.get(r, ""),
+                "logic": _AGENT_LOGIC.get(r, ""),
+            }
+            for r in roles
+        },
+        "sandbox": _SANDBOX_INFO,
+    }

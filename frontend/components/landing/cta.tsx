@@ -21,7 +21,7 @@ export function CTA() {
                 <span className="text-gradient">autonomous analyst</span>.
               </h2>
               <p className="mx-auto mt-5 max-w-xl text-pretty text-base text-mute sm:text-lg">
-                Upload a dataset, type a goal, and watch seven agents turn it
+                Upload a dataset, type a goal, and watch nine agents turn it
                 into a decision — in minutes.
               </p>
               <div className="mt-9 flex flex-col items-center justify-center gap-3 sm:flex-row">

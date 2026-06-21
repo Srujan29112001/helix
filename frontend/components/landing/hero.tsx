@@ -6,7 +6,7 @@ import { Reveal } from "@/components/ui/reveal";
 import { HeroPreview } from "@/components/landing/hero-preview";
 
 const STATS = [
-  { value: "7", label: "specialist agents" },
+  { value: "9", label: "specialist agents" },
   { value: "≤5", label: "self-heal retries" },
   { value: "minutes", label: "not days" },
   { value: "100%", label: "explainable" },

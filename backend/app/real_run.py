@@ -15,7 +15,7 @@ from typing import Any, Awaitable, Callable
 
 import pandas as pd
 
-from .analysis import analyze_dataframe, build_chart_cards, clean, _is_classification
+from .analysis import analyze_dataframe, build_chart_cards, clean, _is_classification, _auto_target
 from .llm import get_llm
 from .rag import retrieve
 from .sandbox import execute_code, strip_code_fences
@@ -34,6 +34,11 @@ async def run_real(
     e2b_key: str = "",
     context: str = "",
 ) -> dict[str, Any]:
+    # resolve an "Auto-detect" target for supervised tasks before anything narrates it
+    auto_target = False
+    if task != "clustering" and (not target or target.strip().lower() == "auto"):
+        target = _auto_target(df)
+        auto_target = True
     rows, cols = df.shape
     ds_info = {
         "name": "uploaded dataset",
@@ -50,7 +55,8 @@ async def run_real(
     await emit("planner", status="active")
     await emit("planner", log={"text": "> objective: " + goal, "kind": "muted"})
     await _p()
-    await emit("planner", log={"text": f"dataset: {rows:,} rows x {cols} cols  |  target: {target}", "kind": "info"})
+    tgt_label = f"{target} (auto-detected)" if auto_target else target
+    await emit("planner", log={"text": f"dataset: {rows:,} rows x {cols} cols  |  target: {tgt_label}", "kind": "info"})
     curated_plan = [
         "1. load & validate dataset",
         "2. profile & clean columns",
@@ -60,7 +66,7 @@ async def run_real(
         "6. explain drivers with SHAP",
     ]
     text = await get_llm("planner").acomplete("planner", {"goal": goal, "dataset": ds_info, "plan": curated_plan})
-    plan = [ln.strip() for ln in text.splitlines() if ln.strip()][:6] or curated_plan
+    plan = [ln.strip() for ln in text.splitlines() if ln.strip()] or curated_plan
     await emit("planner", log={"text": "analysis plan:", "kind": "muted"})
     for line in plan:
         await _p(0.18)
@@ -71,9 +77,9 @@ async def run_real(
     # ── Coder: write a real analysis snippet (RAG-grounded) ──────────────
     await emit("coder", status="active")
     await emit("coder", log={"text": "retrieving library docs (ChromaDB RAG)...", "kind": "muted"})
-    docs = await loop.run_in_executor(None, lambda: retrieve(f"{goal} {target}", 2))
-    for d in docs[:2]:
-        await emit("coder", log={"text": "  doc: " + d[:66] + "...", "kind": "muted"})
+    docs = await loop.run_in_executor(None, lambda: retrieve(f"{goal} {target}", 3))
+    for d in docs:
+        await emit("coder", log={"text": "  RAG doc: " + d, "kind": "muted"})
     safe_target = target.replace('"', "").replace("\\", "")
     curated_code = (
         'print("rows:", df.shape[0], " cols:", df.shape[1])\n'
@@ -87,10 +93,12 @@ async def run_real(
         {"dataset": ds_info, "step": "profile the dataset", "code": [curated_code], "docs": docs},
     )
     gen = strip_code_fences(gen) or curated_code
-    for line in gen.splitlines()[:8]:
-        await _p(0.18)
-        await emit("coder", log={"text": line, "kind": "code"})
-    await emit("coder", log={"text": "code generated", "kind": "ok"})
+    code_lines = gen.splitlines()
+    await emit("coder", log={"text": "# generated analysis code:", "kind": "muted"})
+    for line in code_lines:
+        await _p(0.08)
+        await emit("coder", log={"text": line or " ", "kind": "code"})
+    await emit("coder", log={"text": f"code generated ({len(code_lines)} lines)", "kind": "ok"})
     await emit("coder", status="done")
 
     # ── Executor + Critic: run in the sandbox, self-correct real failures ─
@@ -108,28 +116,38 @@ async def run_real(
     ran_ok = False
     fixes = 0
     for attempt in range(5):
+        await emit("executor", log={"text": f">>> executing code (attempt {attempt + 1})", "kind": "muted"})
         res = await loop.run_in_executor(None, lambda c=current: execute_code(c, df, e2b_key))
         if res.ok:
-            for line in (res.stdout or "").strip().splitlines()[:8]:
-                await emit("executor", log={"text": "  " + line, "kind": "code"})
-            await emit("executor", log={"text": f"OK code executed in {res.engine}", "kind": "ok"})
+            await emit("executor", log={"text": "--- stdout ---", "kind": "muted"})
+            for line in (res.stdout or "").rstrip().splitlines() or ["(no output)"]:
+                await emit("executor", log={"text": line, "kind": "code"})
+            await emit("executor", log={"text": f"OK code executed in {res.engine} (exit 0)", "kind": "ok"})
             ran_ok = True
             break
-        await emit("executor", log={"text": "Traceback: " + res.error, "kind": "err"})
+        # show the FULL traceback the sandbox returned
+        await emit("executor", log={"text": "--- traceback ---", "kind": "err"})
+        for line in str(res.error).splitlines() or [str(res.error)]:
+            await emit("executor", log={"text": line, "kind": "err"})
         await emit("executor", status="error")
+        # Critic: diagnose + emit the full corrected script
         await emit("critic", status="active")
-        await emit("critic", log={"text": "reading traceback...", "kind": "muted"})
+        await emit("critic", log={"text": "reading traceback + diagnosing the failure...", "kind": "muted"})
         await _p(0.4)
         fixed = await get_llm("critic").acomplete(
             "critic", {"error": res.error, "code": current, "fix": curated_fix, "dataset": ds_info}
         )
         fixed = strip_code_fences(fixed.strip()) or curated_fix
         fixes += 1
-        await emit("critic", log={"text": f"patched the code, retry {attempt + 1}/5", "kind": "warn"})
+        await emit("critic", log={"text": f"diagnosis: error on '{res.error}' — rewriting the script", "kind": "warn"})
+        await emit("critic", log={"text": "# corrected code:", "kind": "muted"})
+        for line in fixed.splitlines():
+            await emit("critic", log={"text": line or " ", "kind": "code"})
+        await emit("critic", log={"text": f"patched the code -> retry {attempt + 1}/5", "kind": "warn"})
         await emit("critic", status="done")
         current = fixed
         await emit("executor", status="active")
-        await emit("executor", log={"text": "> re-running patched code...", "kind": "muted"})
+        await emit("executor", log={"text": ">>> re-running patched code...", "kind": "muted"})
     if not ran_ok:
         await emit("executor", log={"text": "could not auto-fix in 5 tries; using the trusted engine", "kind": "warn"})
     # the Critic only runs on a failure — if the code passed first try, say so
@@ -144,7 +162,9 @@ async def run_real(
         _, fixes = clean(df, target)
     except Exception:  # noqa: BLE001
         fixes = []
-    for f in fixes[:4]:
+    if auto_target:
+        await emit("executor", log={"text": f"auto-detected target column: '{target}'", "kind": "info"})
+    for f in fixes:
         await emit("executor", log={"text": "auto-clean: " + f, "kind": "muted"})
 
     await emit("executor", log={"text": "training models (FLAML AutoML, scaled to data size)...", "kind": "muted"})
@@ -157,6 +177,8 @@ async def run_real(
         waited += 5
         await emit("executor", log={"text": f"  …model search in progress ({waited}s)", "kind": "muted"})
     results = await fit_task
+    if auto_target:
+        results.setdefault("_fixes", []).insert(0, f"auto-detected target column '{target}'")
     tr, te = results.get("_train_rows"), results.get("_test_rows")
     if tr and te:
         await emit("executor", log={"text": f"train/test split: {tr:,} train / {te:,} test (80/20)", "kind": "info"})
@@ -184,13 +206,15 @@ async def run_real(
 
     # ── Explainer ────────────────────────────────────────────────────────
     await emit("explainer", status="active")
-    await emit("explainer", log={"text": "computing " + results["barsTitle"] + "...", "kind": "muted"})
+    await emit("explainer", log={"text": "computing " + results["barsTitle"] + " (SHAP)...", "kind": "muted"})
     await _p(0.3)
-    for b in results["bars"][:4]:
-        sign = "-" if b.get("sign") == -1 else "+"
-        await _p(0.22)
-        await emit("explainer", log={"text": "  " + str(b["label"]).ljust(18) + " " + sign + str(round(b["value"], 2)), "kind": "code"})
-    await emit("explainer", log={"text": "explanations ready", "kind": "ok"})
+    await emit("explainer", log={"text": "feature".ljust(20) + "importance  effect", "kind": "muted"})
+    for b in results["bars"]:
+        sign = b.get("sign", 0)
+        eff = "raises" if sign > 0 else ("lowers" if sign < 0 else "")
+        await _p(0.1)
+        await emit("explainer", log={"text": "  " + str(b["label"]).ljust(18) + " " + f"{b['value']:.2f}".ljust(10) + " " + eff, "kind": "code"})
+    await emit("explainer", log={"text": f"explanations ready ({len(results['bars'])} features ranked)", "kind": "ok"})
     await emit("explainer", status="done")
 
     # ── Visualizer: LLM picks the best charts; the engine fills real data ─
@@ -221,8 +245,9 @@ async def run_real(
         )
         results["_charts"] = cards or None
         if cards:
-            for c in cards[:6]:
-                await emit("visualizer", log={"text": f"  {str(c['type']).ljust(9)} · {c['title']}", "kind": "code"})
+            await emit("visualizer", log={"text": "chart plan (type · title):", "kind": "muted"})
+            for c in cards:
+                await emit("visualizer", log={"text": f"  {str(c['type']).ljust(10)} · {c['title']}", "kind": "code"})
             await emit("visualizer", log={"text": f"composed {len(cards)} chart cards (chart + table + note)", "kind": "ok"})
     except Exception as exc:  # noqa: BLE001
         results["_charts"] = None
@@ -238,17 +263,26 @@ async def run_real(
         f"{ctx_prefix}{target} key factors {drivers_list[0]}".strip() if drivers_list else "",
         f"{ctx_prefix}{target} analysis benchmarks".strip(),
     ] if q]
-    await emit("researcher", log={"text": "searching the web: " + queries[0][:60], "kind": "muted"})
+    await emit("researcher", log={"text": "search queries:", "kind": "muted"})
+    for q in queries:
+        await emit("researcher", log={"text": "  ? " + q, "kind": "code"})
     hits = await loop.run_in_executor(None, lambda: web_research(queries, 5))
     if hits:
-        for h in hits[:4]:
-            await emit("researcher", log={"text": "  - " + (h["title"] or h["url"])[:66], "kind": "code"})
+        await emit("researcher", log={"text": f"--- {len(hits)} live sources ---", "kind": "muted"})
+        for h in hits:
+            await emit("researcher", log={"text": "  - " + (h["title"] or h["url"]), "kind": "code"})
+            if h.get("url"):
+                await emit("researcher", log={"text": "    " + h["url"], "kind": "muted"})
     else:
         await emit("researcher", log={"text": "no live results — using domain knowledge", "kind": "warn"})
     research_text = await get_llm("researcher").acomplete(
         "researcher",
         {"goal": goal, "context": context, "drivers": ", ".join(drivers_list), "hits": hits, "dataset": ds_info},
     )
+    await emit("researcher", log={"text": "--- synthesis ---", "kind": "muted"})
+    for line in (research_text or "").splitlines() or [research_text or ""]:
+        if line.strip():
+            await emit("researcher", log={"text": line, "kind": "code"})
     await emit("researcher", log={"text": "synthesised external context", "kind": "ok"})
     await emit("researcher", status="done")
     results["_research"] = {"queries": queries, "hits": hits[:6], "synthesis": research_text}

@@ -1,8 +1,9 @@
 # Helix — Autonomous Data Science Agent
 
 > Turn a CSV and a plain-English question into a business-ready answer —
-> automatically. A multi-agent system that **plans, writes code, runs it,
-> fixes its own errors, builds a model, explains it, and writes the report.**
+> automatically. A **nine-agent** system that **plans, writes code, runs it,
+> fixes its own errors, builds a model, explains it, picks the right charts,
+> researches the live web, and writes the report.**
 >
 > Capstone project · IIIT-H. ("Helix" is a working name — easy to change.)
 
@@ -23,166 +24,188 @@ decisions, because of three bottlenecks:
 
 ### The solution
 **Helix** is an autonomous "AI data scientist." You give it:
-- a **dataset** (CSV), and
+- a **dataset** (any CSV), and
 - a **goal in plain English** (e.g. *"predict which customers will churn"*),
 
 and a team of specialized AI **agents** does the entire workflow with no human
 in the loop — including **fixing its own code when it breaks** (the headline
 feature: *self-correcting execution*). It ends with metrics, the key drivers
-(explainability), and a short business report.
+(explainability), a gallery of the right charts, a live-web context pass, and a
+short business report with a recommendation.
 
 > **Domain-agnostic.** Helix works on **any tabular CSV from any industry** —
 > finance, healthcare, retail, marketing, HR, science, and more. It auto-detects
 > the task (**classification, regression, clustering, or NLP/text**), cleans messy
 > data, parses dates, and adapts — verified on churn, sales, segmentation, reviews,
-> healthcare readmission, and loan default. The churn walkthrough below is just one
-> example.
+> insurance, Titanic, penguins and loan default.
 
 ### A concrete example (customer churn — one of many)
 1. You upload `telco_churn.csv` and type *"predict churn and the key drivers."*
-2. The **Planner** writes a 6-step plan (load → EDA → clean → encode → train → explain).
-3. The **Coder** writes the Python for each step.
-4. The **Executor** runs it — and hits `KeyError: 'Churn'`.
-5. The **Critic** reads the traceback, patches it (`df.columns.str.strip()`),
-   and retries — up to 5 times — until it runs clean.
-6. **AutoML** finds the best model (LightGBM, 0.84 ROC-AUC).
+2. The **Planner** writes a step-by-step plan (load → EDA → clean → encode → train → explain).
+3. The **Coder** writes the Python for each step (grounded by RAG).
+4. The **Executor** runs it in a sandbox — and hits a `TypeError`.
+5. The **Critic** reads the traceback, rewrites the script, and retries — up to
+   5 times — until it runs clean.
+6. **AutoML** (FLAML) finds the best model (LightGBM, ~0.84 ROC-AUC).
 7. **SHAP** explains *why* (contract type and tenure are the biggest drivers).
-8. The **Reporter** writes: *"Month-to-month customers with high charges churn
-   most; long tenure protects against it → offer annual contracts."*
+8. The **Visualizer** picks the best chart per finding; the **Researcher** pulls
+   live web context; the **Reporter** writes the business narrative + a recommendation.
 
 What took days now takes minutes — and a non-technical user did it themselves.
 
 ---
 
-## 2. Who is it for? (Audience)
+## 2. Who is it for?
 
 | Audience | What they get |
 |----------|---------------|
-| **Non-technical business users** (product, marketing, ops) | Ask questions in English, get data-backed answers + plain explanations — without waiting on a data team. **Primary audience.** |
-| **Data scientists / analysts** | Automate the boring 60–70% (cleaning, EDA, baseline modeling) so they focus on judgment and hard problems. |
-| **Small teams / startups** without a data team | A "data scientist in a box." |
-| **Students & educators** | A transparent, explainable reference for the end-to-end ML workflow. |
-| **(For this capstone) evaluators** | A demonstration of multi-agent orchestration, self-correction, AutoML, and explainability working together. |
+| **Non-technical business users** | Ask questions in English, get data-backed answers + plain explanations — without a data team. **Primary audience.** |
+| **Data scientists / analysts** | Automate the boring 60–70% (cleaning, EDA, baseline modeling) so they focus on judgment. |
+| **Small teams / startups** | A "data scientist in a box." |
+| **Students & educators** | A transparent, explainable reference for the end-to-end ML + AI-agent workflow. |
+| **Evaluators** | A demonstration of multi-agent orchestration, self-correction, AutoML, explainability, and RAG working together. |
 
 ---
 
 ## 3. How it works (architecture)
 
-Helix is two cooperating parts: a **web app** (what the user sees) and an
-**agent backend** (the brain).
+Helix is two cooperating parts: a **web app** (the Studio) and an **agent
+backend** (the brain), linked by a live Server-Sent-Events stream.
 
 ```
   ┌─────────────────────────────────────────────────────────┐
-  │  FRONTEND  ·  Next.js Studio (the browser app)           │
-  │  upload CSV + type goal  →  watch agents work live  →     │
-  │  see charts + report                                     │
+  │  FRONTEND · Next.js Studio (the browser app)             │
+  │  upload CSV + type goal → watch agents work live →       │
+  │  read the dashboard (charts, 3D graph, business report)  │
   └───────────────┬─────────────────────────────────────────┘
-                  │  POST /api/run   (Server-Sent Events: a live
-                  │                   stream of agent events)
+                  │  POST /api/analyze  (Server-Sent Events:
+                  │                      a live stream of agent events)
                   ▼
   ┌─────────────────────────────────────────────────────────┐
-  │  BACKEND  ·  FastAPI  →  LangGraph state graph            │
+  │  BACKEND · FastAPI → LangGraph state graph               │
   │                                                          │
-  │   Planner → Coder → Executor ──► Critic ──┐ (retry ≤ 5)   │
-  │                        ▲                  │ self-heal     │
-  │                        └──────────────────┘               │
-  │              → AutoML → Explainer → Reporter             │
+  │   Planner → Coder → Executor ──► Critic ──┐ (retry ≤ 5)  │
+  │                        ▲                  │ self-heal    │
+  │                        └──────────────────┘              │
+  │     → AutoML → Explainer → Visualizer → Researcher       │
+  │     → Reporter                                           │
   └─────────────────────────────────────────────────────────┘
 ```
 
-### The seven agents
+### The nine agents
 | # | Agent | Job | Tech |
 |---|-------|-----|------|
-| 1 | **Planner** | Break the goal into an ordered analysis plan | LLM (DeepSeek-Coder, chain-of-thought) |
+| 1 | **Planner** | Break the goal into an ordered analysis plan | LLM (chain-of-thought) |
 | 2 | **Coder** | Write Python for each step | LLM, RAG-grounded |
-| 3 | **Executor** | Run the code safely, capture output/errors | Sandbox |
-| 4 | **Critic** | Read tracebacks, patch the code, retry (≤5) | LLM — *self-correction* |
+| 3 | **Executor** | Run the code safely, capture stdout/errors | Sandbox (RestrictedPython / E2B microVM) |
+| 4 | **Critic** | Read tracebacks, rewrite the code, retry (≤5) | LLM — *self-correction* |
 | 5 | **AutoML** | Search models + hyper-parameters | FLAML |
-| 6 | **Explainer** | Quantify what drives predictions | SHAP |
-| 7 | **Reporter** | Write the business narrative | LLM (Mistral) |
+| 6 | **Explainer** | Quantify what drives predictions (+ direction) | SHAP |
+| 7 | **Visualizer** | Pick the best chart per finding (engine fills real data) | LLM + engine |
+| 8 | **Researcher** | Pull live real-world context from the web | DuckDuckGo / Tavily |
+| 9 | **Reporter** | Write the business narrative + recommendation | LLM |
 
 These run as a **LangGraph** "state graph": each agent is a node, state flows
 between them, and a **conditional edge** loops Executor↔Critic until the code
-works (or 5 tries are exhausted).
-
-### How the live updates work
-The backend streams **Server-Sent Events** as the graph runs — each `{stage,
-status, log}` event updates the Studio in real time (status dots, the streaming
-execution log, then the final results). This is why you *watch* the agents
-work instead of staring at a spinner.
+works (or 5 tries are exhausted). The backend streams **Server-Sent Events** so
+you *watch* the agents work — full code, full output, prompts and logic per
+stage — instead of staring at a spinner.
 
 ---
 
-## 4. Tech stack — and why each choice
+## 4. Highlights
+
+- **Self-correcting code execution** — the Executor↔Critic loop reads real
+  tracebacks and rewrites the code until it runs (up to 5 tries).
+- **Big-data ready** — handles files up to ~3M rows: a striped read-sample,
+  width-scaled training (up to ~500k rows), a 150-feature cap, 32-bit downcast,
+  and a streaming heartbeat so long fits never time out.
+- **Honest model-quality verdict** — grades every result from *Strong
+  predictive signal* to *Near-chance — weak signal*, so a weak dataset explains
+  itself instead of looking broken.
+- **Recommended-charts gallery** — the Visualizer chooses chart types (bar,
+  column, pie, line, area, radar, histogram, scatter, box, heatmap, statcards);
+  the engine fills every number from the real data, so **a chart can never show
+  a fabricated value**. Each card ships with a data table + a "how to read this" note.
+- **3D Knowledge Graph** — the whole analysis as an explorable force-directed
+  map (target, drivers, segments, metrics, charts, quality, columns) with
+  hover, click-for-detail, and search.
+- **Live web research** — the Researcher grounds the report in real sources,
+  with an On/Off toggle to compare the report *with vs without* it.
+- **Full transparency** — the Studio shows the **exact system prompt + logic**
+  for every agent, the **RestrictedPython / E2B sandbox** rules, and the complete
+  code + stdout + tracebacks streamed live (Colab-style).
+- **Pluggable LLMs + controls** — one model for all agents *or* a different
+  model per agent, a **temperature** slider (global or per-agent), and an
+  optional **E2B microVM** key. Keys live only in your browser.
+
+### Providers & models
+Bring your own key for any of: **Groq** (free, fast), **OpenAI**, **DeepSeek**,
+**Mistral**, **OpenRouter**, **Google Gemini** (free), **Z.ai (GLM)**,
+**Anthropic (Claude)**. With no key, Helix runs a deterministic mock for the
+narration while still doing **real ML** (FLAML + SHAP).
+
+---
+
+## 5. Tech stack — and why each choice
 
 ### Frontend
 | Tech | Why |
 |------|-----|
-| **Next.js 16 + React 19** | Production React framework; routing, builds, and deploy story are solved. Lets us build a genuinely premium UI (the original proposal's Gradio can't). |
-| **TypeScript** | Type safety across the frontend↔backend event contract — fewer runtime surprises. |
-| **Tailwind CSS v4** | Fast, consistent styling via utilities + a custom design-token theme; no CSS sprawl. |
-| **motion (Framer Motion)** | The smooth animations, the live pipeline, scroll reveals — the "wow" factor. |
-| **HTML Canvas** | The animated "data field" hero (neon nodes + flowing data) — bespoke, performant. |
+| **Next.js 16 + React 19** | Production React framework; a genuinely premium UI (the proposal's Gradio can't). |
+| **TypeScript** | Type-safe frontend↔backend event contract. |
+| **Tailwind CSS v4** | Fast, consistent styling via utilities + design tokens. |
+| **motion (Framer Motion)** | Animations, the live pipeline, scroll reveals. |
+| **3d-force-graph + three** | The interactive 3D knowledge graph. |
 
 ### Backend
 | Tech | Why |
 |------|-----|
-| **FastAPI** | Modern async Python API; native streaming (SSE) support; minimal boilerplate; auto docs. Needed because the UI is a separate web app, not a Python widget. |
-| **LangGraph** | Purpose-built for **multi-agent, stateful, looping** workflows — exactly the Planner→…→Critic↺ pattern. Cleaner than hand-rolling control flow. |
-| **LangChain core** | Shared message/LLM abstractions used by LangGraph. |
-| **Pydantic** | Request validation and typed data models. |
-| **httpx** | Async HTTP client used to call hosted/local LLM APIs. |
-
-### Models & ML
-| Tech | Why |
-|------|-----|
-| **DeepSeek-Coder** (Planner/Coder/Critic) | Strong open code-generation model — fits the "write & fix Python" job. |
-| **Mistral-7B** (Reporter) | Good open model for fluent natural-language narratives. |
-| **Hybrid hosting** (local + API) | Local = free/private; API = reliable/higher-quality. Our LLM layer resolves a provider **per agent role**, so you mix them freely and add keys without code changes. |
+| **FastAPI** | Modern async Python API with native SSE streaming; minimal boilerplate. |
+| **LangGraph** | Purpose-built for **multi-agent, stateful, looping** workflows — the Planner→…→Critic↺ pattern. |
+| **Pydantic / httpx** | Request validation; async HTTP to LLM providers. |
 | **pandas / scikit-learn** | The standard data-wrangling + ML toolkit. |
-| **FLAML** | Lightweight **AutoML** — finds a good model under a time budget automatically. |
-| **SHAP** | The standard for **explainability** — turns a model into "here's why." |
-| **ChromaDB + sentence-transformers** | **RAG**: index library docs so the Coder hallucinates fewer APIs. |
-| **RestrictedPython** | Runs generated code with dangerous operations blocked. *(Kept per the proposal; wrapped behind a swappable interface — the highest-risk component.)* |
+| **FLAML** | Lightweight **AutoML** — finds a good model under a time budget. |
+| **SHAP** | The standard for **explainability** — "here's why," with direction. |
+| **ChromaDB + MiniLM** | **RAG**: ground the Coder in real recipes; fewer hallucinated APIs. |
+| **RestrictedPython + E2B** | Sandbox the agent's code — in-process jail by default, hardened microVM with a key. |
+| **ddgs / Tavily** | Live web research for the Researcher. |
 
 ---
 
-## 5. Repository structure
+## 6. Repository structure
 
 ```
 Capstone Project IIITH/
 ├── README.md            ← this file
-├── PLAN.md              ← phase-by-phase roadmap + decisions
 ├── frontend/            ← Next.js web app (the Studio + landing)
-│   ├── app/
-│   │   ├── globals.css      design system: colors, fonts, animations
-│   │   ├── layout.tsx       fonts + page metadata
-│   │   ├── page.tsx         landing page (assembles the sections)
-│   │   └── studio/page.tsx  the /studio workspace route
+│   ├── app/                 landing + /studio route
 │   ├── components/
-│   │   ├── backgrounds/data-field.tsx   animated neon-network canvas
-│   │   ├── site/        logo, navbar, footer
-│   │   ├── landing/     hero, pipeline visualizer, capabilities, use-cases…
-│   │   ├── studio/      studio-client (the live app) + charts
-│   │   └── ui/          button, badge, reveal, section (reusable bits)
+│   │   ├── landing/         hero, pipeline visualizer, capabilities, use-cases…
+│   │   └── studio/
+│   │       ├── studio-client.tsx   the live Studio (setup, pipeline, results)
+│   │       ├── charts.tsx          chart primitives + ChartCard (chart+table+note)
+│   │       └── knowledge-graph.tsx 3D force-directed analysis map
 │   └── lib/
-│       ├── agents.ts        the 7 agents (shared by UI + studio)
-│       ├── studio-run.ts    4 sample datasets + results + sim script
-│       ├── api.ts           streaming client (talks to the backend)
-│       └── utils.ts         small helpers (cn, alpha, fmt)
+│       ├── agents.ts        the 9 agents (shared by UI + studio)
+│       ├── studio-run.ts    sample datasets + the RunResults contract
+│       └── api.ts           streaming client (SSE)
 └── backend/             ← FastAPI service (the agent brain)
     └── app/
-        ├── main.py          API routes + SSE streaming
-        ├── pipeline.py      the LangGraph graph + 7 agent nodes
-        ├── llm.py           hybrid LLM provider layer (mock + real)
-        ├── datasets.py      dataset metadata + result payloads
-        ├── events.py        scripted fallback run
+        ├── main.py          API routes + SSE streaming + big-data ingest + /api/prompts
+        ├── real_run.py      the 9-agent run on an uploaded CSV
+        ├── pipeline.py      the LangGraph graph (sample datasets)
+        ├── analysis.py      the ML engine: clean → FLAML → SHAP → EDA → charts → verdict
+        ├── llm.py           pluggable LLM layer (mock + real, per-role, temperature)
+        ├── sandbox.py       RestrictedPython + E2B microVM executor
+        ├── rag.py           ChromaDB + MiniLM retrieval (Coder grounding)
+        ├── web_search.py    live web research (DuckDuckGo / Tavily)
         └── schemas.py       request models
 ```
 
 ---
 
-## 6. How to run it
+## 7. How to run it
 
 **Backend:**
 ```bash
@@ -201,27 +224,17 @@ npm run dev          # → http://localhost:3000  (Studio at /studio)
 ```
 
 With no backend running, the Studio falls back to a built-in simulation, so the
-UI always works.
+UI always works. `docker compose up --build` runs both halves at once.
 
 ---
 
-## 7. Status — what's done (≈ 40%)
+## 8. Deployment
 
-| Phase | Scope | Status |
-|------:|-------|--------|
-| **0** | Frontend — landing + interactive Studio | ✅ Done |
-| **1** | FastAPI backend + live SSE wiring | ✅ Done |
-| **2** | Real LangGraph pipeline + hybrid LLM layer | ✅ Done |
-| 3 | Execution sandbox (run real code) | ⬜ Next |
-| 4 | Real AutoML (FLAML) + SHAP + EDA charts | ⬜ |
-| 5 | RAG grounding (ChromaDB) | ⬜ |
-| 6 | Report agent (real narrative + charts) | ⬜ |
-| 7 | Multi-dataset robustness | ⬜ |
-| 8 | Evaluation & metrics | ⬜ |
-| 9 | Deployment & docs | ⬜ |
-| 10 | Presentation polish | ⬜ |
+| Half | Hosted on | Notes |
+|------|-----------|-------|
+| **Frontend** (Next.js Studio) | **Vercel** | Set `NEXT_PUBLIC_API_URL` to the backend Space URL. |
+| **Backend** (FastAPI + ML) | **Hugging Face Spaces** (Docker) | Free 16 GB RAM — enough for FLAML + SHAP. Sleeps when idle (first request ~30–60s to wake). |
 
-**Done = the entire product experience + the agent architecture, running
-end-to-end.** What remains is replacing three stubs with real computation:
-the Executor running actual code (3), real AutoML/SHAP numbers (4), and RAG (5).
-See `PLAN.md` for full detail.
+See `DEPLOY.md` for full instructions. **Status: complete and deployed** — the
+entire product experience, the 9-agent architecture, real ML (FLAML + SHAP),
+the sandbox, RAG, live research, and the full dashboard, running end-to-end.

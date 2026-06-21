@@ -12,5 +12,6 @@ class RunRequest(BaseModel):
     provider: str = "groq"
     model: str | None = None
     apiKey: str | None = None
-    # optional per-role config: {"default": {...}, "<role>": {provider, model, api_key}}
+    temperature: float | None = None
+    # optional per-role config: {"default": {...}, "<role>": {provider, model, api_key, temperature}}
     llms: dict | None = None

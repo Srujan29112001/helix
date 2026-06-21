@@ -51,7 +51,7 @@ const FEATURES = [
   {
     icon: Network,
     title: "Multi-agent orchestration",
-    body: "LangGraph wires the seven agents into a single stateful graph — with branching, retries and shared memory — so the workflow is observable end to end.",
+    body: "LangGraph wires the nine agents into a single stateful graph — with branching, retries and shared memory — so the workflow is observable end to end.",
     accent: "#8b5cf6",
     span: "md:col-span-6",
     wide: true,

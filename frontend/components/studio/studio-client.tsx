@@ -29,6 +29,7 @@ import {
   Gauge,
   FileText,
   Network,
+  ChevronRight,
 } from "lucide-react";
 import { AGENTS, type AgentId, type Agent } from "@/lib/agents";
 import {
@@ -40,7 +41,7 @@ import {
   type LogKind,
   type RunResults,
 } from "@/lib/studio-run";
-import { isLive, streamRun, streamAnalyze, type StreamHandlers } from "@/lib/api";
+import { isLive, streamRun, streamAnalyze, API_URL, type StreamHandlers } from "@/lib/api";
 import {
   Donut,
   Bars,
@@ -101,9 +102,21 @@ const LLM_ROLES = [
   { id: "reporter", name: "Reporter" },
   { id: "researcher", name: "Researcher" },
 ];
-type RoleLLM = Record<string, { provider: string; model: string; apiKey: string }>;
+type RoleLLM = Record<string, { provider: string; model: string; apiKey: string; temperature: string }>;
 const emptyRoleLLM = (): RoleLLM =>
-  Object.fromEntries(LLM_ROLES.map((r) => [r.id, { provider: "", model: "", apiKey: "" }]));
+  Object.fromEntries(LLM_ROLES.map((r) => [r.id, { provider: "", model: "", apiKey: "", temperature: "" }]));
+
+// the exact backend prompts + per-agent logic (GET /api/prompts), shown in the pipeline
+type AgentInfo = {
+  agents: Record<string, { llm: boolean; system: string; logic: string }>;
+  sandbox: {
+    default_engine: string;
+    hardened_engine: string;
+    allowed_imports: string[];
+    blocked: string[];
+    captured: string;
+  };
+};
 
 // Sample datasets span industries — the real path is "upload your own".
 const INDUSTRY: Record<string, string> = {
@@ -215,10 +228,12 @@ export function StudioClient() {
   const [provider, setProvider] = useState("groq");
   const [model, setModel] = useState(PROVIDERS[0].models[0]);
   const [apiKey, setApiKey] = useState("");
+  const [temperature, setTemperature] = useState("0.2");
   const [e2bKey, setE2bKey] = useState("");
   const [contextTags, setContextTags] = useState<string[]>([]);
   const [llmMode, setLlmMode] = useState<"single" | "perRole">("single");
   const [roleLLM, setRoleLLM] = useState<RoleLLM>(emptyRoleLLM);
+  const [agentInfo, setAgentInfo] = useState<AgentInfo | null>(null);
 
   const timers = useRef<number[]>([]);
   const logId = useRef(0);
@@ -253,6 +268,7 @@ export function StudioClient() {
       if (s.provider) setProvider(s.provider);
       if (s.model) setModel(s.model);
       if (s.apiKey) setApiKey(s.apiKey);
+      if (s.temperature) setTemperature(s.temperature);
       if (s.e2bKey) setE2bKey(s.e2bKey);
       if (s.llmMode) setLlmMode(s.llmMode);
       if (s.roleLLM) setRoleLLM({ ...emptyRoleLLM(), ...s.roleLLM });
@@ -264,12 +280,23 @@ export function StudioClient() {
     try {
       localStorage.setItem(
         "helix_llm",
-        JSON.stringify({ provider, model, apiKey, e2bKey, llmMode, roleLLM }),
+        JSON.stringify({ provider, model, apiKey, temperature, e2bKey, llmMode, roleLLM }),
       );
     } catch {
       /* ignore */
     }
-  }, [provider, model, apiKey, e2bKey, llmMode, roleLLM]);
+  }, [provider, model, apiKey, temperature, e2bKey, llmMode, roleLLM]);
+
+  // fetch the real backend prompts + per-agent logic so the pipeline can show them
+  useEffect(() => {
+    if (!isLive()) return;
+    fetch(`${API_URL}/api/prompts`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => d && setAgentInfo(d))
+      .catch(() => {
+        /* prompts panel just stays hidden */
+      });
+  }, []);
 
   const changeProvider = (p: string) => {
     setProvider(p);
@@ -374,23 +401,33 @@ export function StudioClient() {
         setTab("results");
       },
     };
+    const defTemp = parseFloat(temperature);
+    const dt = Number.isFinite(defTemp) ? defTemp : 0.2;
     const buildLLMs = () => {
-      const def = { provider, model, api_key: apiKey };
+      const def = { provider, model, api_key: apiKey, temperature: dt };
       if (llmMode === "single") return apiKey ? { default: def } : undefined;
-      const out: Record<string, { provider: string; model?: string; api_key: string }> = {};
+      const out: Record<
+        string,
+        { provider: string; model?: string; api_key: string; temperature?: number }
+      > = {};
       if (apiKey) out.default = def;
       for (const role of LLM_ROLES) {
         const c = roleLLM[role.id];
-        if (c?.apiKey)
-          out[role.id] = {
-            provider: c.provider || provider || "groq",
-            model: c.model || undefined,
-            api_key: c.apiKey,
-          };
+        const rt = parseFloat(c?.temperature ?? "");
+        const hasOverride = !!(
+          c?.apiKey || c?.provider || c?.model || (c?.temperature && c.temperature.trim())
+        );
+        if (!hasOverride) continue;
+        out[role.id] = {
+          provider: c.provider || provider || "groq",
+          model: c.model || model || undefined,
+          api_key: c.apiKey || apiKey,
+          temperature: Number.isFinite(rt) ? rt : dt,
+        };
       }
       return Object.keys(out).length ? out : undefined;
     };
-    const llm = { provider, model, apiKey, llms: buildLLMs() };
+    const llm = { provider, model, apiKey, temperature: dt, llms: buildLLMs() };
     const job =
       datasetId === "custom" && customFile
         ? streamAnalyze(
@@ -518,6 +555,7 @@ export function StudioClient() {
             provider={provider}
             model={model}
             apiKey={apiKey}
+            temperature={temperature}
             e2bKey={e2bKey}
             contextTags={contextTags}
             llmMode={llmMode}
@@ -529,6 +567,7 @@ export function StudioClient() {
             changeProvider={changeProvider}
             setModel={setModel}
             setApiKey={setApiKey}
+            setTemperature={setTemperature}
             setE2bKey={setE2bKey}
             setContextTags={setContextTags}
             setLlmMode={setLlmMode}
@@ -622,6 +661,7 @@ export function StudioClient() {
                       results={phase === "done" ? liveResults ?? ds.results : liveResults}
                       ctx={pipeCtx}
                       phase={phase}
+                      agentInfo={agentInfo}
                     />
                   </motion.div>
                 ) : tab === "activity" ? (
@@ -710,6 +750,7 @@ function Setup({
   provider,
   model,
   apiKey,
+  temperature,
   e2bKey,
   contextTags,
   llmMode,
@@ -721,6 +762,7 @@ function Setup({
   changeProvider,
   setModel,
   setApiKey,
+  setTemperature,
   setE2bKey,
   setContextTags,
   setLlmMode,
@@ -743,6 +785,7 @@ function Setup({
   provider: string;
   model: string;
   apiKey: string;
+  temperature: string;
   e2bKey: string;
   contextTags: string[];
   llmMode: "single" | "perRole";
@@ -754,6 +797,7 @@ function Setup({
   changeProvider: (v: string) => void;
   setModel: (v: string) => void;
   setApiKey: (v: string) => void;
+  setTemperature: (v: string) => void;
   setE2bKey: (v: string) => void;
   setContextTags: (v: string[]) => void;
   setLlmMode: (v: "single" | "perRole") => void;
@@ -769,16 +813,14 @@ function Setup({
   const [showE2bKey, setShowE2bKey] = useState(false);
   const [showRoleKeys, setShowRoleKeys] = useState(false);
   const [ctxInput, setCtxInput] = useState("");
-  const needsTarget =
-    datasetId === "custom" && taskType !== "clustering" && !target;
-  const disabled = !goal.trim() || needsTarget;
-  const hint = needsTarget
-    ? "Pick a target column to continue"
-    : !goal.trim()
-      ? "Describe your goal to continue"
-      : apiKey
-        ? `Ready · ${provider} · ${model}`
-        : "Ready · offline mock (add a key for real AI narration)";
+  // Target is never strictly required: clustering needs none, and "Auto-detect"
+  // (empty target) lets the backend pick the column for supervised tasks.
+  const disabled = !goal.trim();
+  const hint = !goal.trim()
+    ? "Describe your goal to continue"
+    : apiKey
+      ? `Ready · ${provider} · ${model}`
+      : "Ready · offline mock (add a key for real AI narration)";
   const models = PROVIDERS.find((p) => p.id === provider)?.models ?? [];
   return (
     <div className="mx-auto max-w-4xl">
@@ -789,7 +831,7 @@ function Setup({
         <p className="mx-auto mt-3 max-w-2xl text-sm text-mute sm:text-base">
           Bring <span className="text-mist">any tabular dataset from any field</span> —
           classification, regression, clustering or text. Start from a sample or
-          upload your own; the seven agents take it from there.
+          upload your own; the nine agents take it from there.
         </p>
       </div>
 
@@ -886,23 +928,32 @@ function Setup({
         </div>
 
         {datasetId === "custom" && columns.length > 0 && (
-          <div className="mt-3 grid gap-3 sm:grid-cols-2">
-            <div className="rounded-2xl border border-white/10 bg-panel p-4">
-              <label className="font-mono text-[10px] uppercase tracking-[0.18em] text-mute">
-                Target column · what to predict
-              </label>
-              <select
-                value={target}
-                onChange={(e) => setTarget(e.target.value)}
-                className="mt-2 w-full rounded-lg border border-white/10 bg-ink/70 px-3 py-2 text-sm text-mist outline-none focus:border-brand/50"
-              >
-                {columns.map((c) => (
-                  <option key={c} value={c} className="bg-ink text-mist">
-                    {c}
+          <div className={cn("mt-3 grid gap-3", taskType !== "clustering" && "sm:grid-cols-2")}>
+            {/* clustering is unsupervised → no target column */}
+            {taskType !== "clustering" && (
+              <div className="rounded-2xl border border-white/10 bg-panel p-4">
+                <label className="font-mono text-[10px] uppercase tracking-[0.18em] text-mute">
+                  Target column · what to predict
+                </label>
+                <select
+                  value={target}
+                  onChange={(e) => setTarget(e.target.value)}
+                  className="mt-2 w-full rounded-lg border border-white/10 bg-ink/70 px-3 py-2 text-sm text-mist outline-none focus:border-brand/50"
+                >
+                  <option value="" className="bg-ink text-mist">
+                    Auto-detect
                   </option>
-                ))}
-              </select>
-            </div>
+                  {columns.map((c) => (
+                    <option key={c} value={c} className="bg-ink text-mist">
+                      {c}
+                    </option>
+                  ))}
+                </select>
+                <p className="mt-1.5 font-mono text-[10px] text-mute">
+                  {target ? `predicting "${target}"` : "Helix will pick the most likely target column"}
+                </p>
+              </div>
+            )}
             <div className="rounded-2xl border border-white/10 bg-panel p-4">
               <label className="font-mono text-[10px] uppercase tracking-[0.18em] text-mute">
                 Task type
@@ -1147,10 +1198,37 @@ function Setup({
             </div>
           </label>
         </div>
+
+        {/* temperature · creativity vs precision (the default for all agents) */}
+        <div className="mt-3 rounded-xl border border-white/10 bg-white/[0.02] p-4">
+          <div className="flex items-center justify-between">
+            <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-mute">
+              {llmMode === "perRole" ? "Default temperature" : "Temperature · creativity"}
+            </span>
+            <span className="rounded-md bg-brand/15 px-2 py-0.5 font-mono text-xs text-brand">
+              {(parseFloat(temperature) || 0).toFixed(2)}
+            </span>
+          </div>
+          <input
+            type="range"
+            min={0}
+            max={1}
+            step={0.05}
+            value={parseFloat(temperature) || 0}
+            onChange={(e) => setTemperature(e.target.value)}
+            className="mt-3 w-full"
+            style={{ accentColor: "#25d7f0" }}
+          />
+          <div className="mt-1 flex justify-between font-mono text-[9px] text-mute">
+            <span>0 · precise &amp; deterministic</span>
+            <span>1 · creative &amp; varied</span>
+          </div>
+        </div>
+
         <p className="mt-2 font-mono text-[10px] leading-relaxed text-mute">
           {llmMode === "perRole"
             ? "Default — used by any agent you don't override below. "
-            : "Key stored only in your browser. Blank = offline mock (real ML, mock narration). "}
+            : "Key + temperature stored only in your browser. Blank key = offline mock (real ML, mock narration). "}
           The ML model itself is auto-selected by <span className="text-mist">FLAML</span>.
         </p>
 
@@ -1173,11 +1251,27 @@ function Setup({
                 const c = roleLLM[role.id];
                 const models =
                   PROVIDERS.find((p) => p.id === (c.provider || provider))?.models ?? [];
-                const set = (patch: Partial<{ provider: string; model: string; apiKey: string }>) =>
-                  setRoleLLM({ ...roleLLM, [role.id]: { ...c, ...patch } });
+                const set = (
+                  patch: Partial<{ provider: string; model: string; apiKey: string; temperature: string }>,
+                ) => setRoleLLM({ ...roleLLM, [role.id]: { ...c, ...patch } });
                 return (
                   <div key={role.id} className="rounded-lg border border-white/10 bg-white/[0.02] p-2.5">
-                    <div className="mb-1.5 text-xs font-medium text-mist">{role.name}</div>
+                    <div className="mb-1.5 flex items-center justify-between">
+                      <span className="text-xs font-medium text-mist">{role.name}</span>
+                      <span className="flex items-center gap-1.5 font-mono text-[10px] text-mute">
+                        temp
+                        <input
+                          type="number"
+                          min={0}
+                          max={1}
+                          step={0.05}
+                          value={c.temperature}
+                          onChange={(e) => set({ temperature: e.target.value })}
+                          placeholder={temperature}
+                          className="w-14 rounded border border-white/10 bg-ink/70 px-1.5 py-0.5 text-right text-[11px] text-mist outline-none focus:border-brand/50"
+                        />
+                      </span>
+                    </div>
                     <div className="grid gap-2 sm:grid-cols-3">
                       <select
                         value={c.provider}
@@ -1429,12 +1523,16 @@ function StageCard({
   logs,
   io,
   index,
+  info,
+  sandbox,
 }: {
   agent: Agent;
   status: StageStatus;
   logs: LogLine[];
   io: { in: string; out: string };
   index: number;
+  info?: { llm: boolean; system: string; logic: string };
+  sandbox?: AgentInfo["sandbox"];
 }) {
   const accent = agent.accent;
   const active = status === "active";
@@ -1509,8 +1607,70 @@ function StageCard({
           <span className="text-[12px] text-mute">{io.out}</span>
         </div>
 
+        {/* the exact prompt + logic this agent runs (from GET /api/prompts) */}
+        {info && (info.logic || info.system) && (
+          <details className="group mt-3 rounded-lg border border-white/10 bg-white/[0.02]">
+            <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 text-[11px] text-mute transition-colors hover:text-mist">
+              <ChevronRight className="h-3 w-3 shrink-0 transition-transform group-open:rotate-90" />
+              {info.llm ? "Prompt & logic" : "Logic"}
+              {info.llm && (
+                <span className="rounded-full bg-brand/15 px-1.5 py-0.5 font-mono text-[8px] uppercase tracking-wider text-brand">
+                  LLM-driven
+                </span>
+              )}
+            </summary>
+            <div className="space-y-2.5 border-t border-white/10 px-3 py-2.5">
+              {info.logic && (
+                <div>
+                  <div className="mb-1 font-mono text-[9px] uppercase tracking-wider text-mute">
+                    what it does
+                  </div>
+                  <p className="text-[12px] leading-relaxed text-mist">{info.logic}</p>
+                </div>
+              )}
+              {info.system && (
+                <div>
+                  <div className="mb-1 font-mono text-[9px] uppercase tracking-wider text-mute">
+                    system prompt sent to the model
+                  </div>
+                  <pre className="scroll-thin max-h-52 overflow-auto whitespace-pre-wrap rounded border border-white/10 bg-[#06080f] p-2.5 font-mono text-[11px] leading-relaxed text-mist/90">
+                    {info.system}
+                  </pre>
+                </div>
+              )}
+              {agent.id === "executor" && sandbox && (
+                <div>
+                  <div className="mb-1 font-mono text-[9px] uppercase tracking-wider text-mute">
+                    sandbox isolation
+                  </div>
+                  <p className="text-[11.5px] leading-relaxed text-mute">
+                    <span className="text-mist">{sandbox.default_engine}</span>; hardened option:{" "}
+                    {sandbox.hardened_engine}. Captures {sandbox.captured}
+                  </p>
+                  <div className="mt-1.5 flex flex-wrap items-center gap-1">
+                    <span className="mr-1 font-mono text-[9px] uppercase text-acid">allow</span>
+                    {sandbox.allowed_imports.map((m) => (
+                      <span key={m} className="rounded bg-acid/10 px-1.5 py-0.5 font-mono text-[9px] text-acid">
+                        {m}
+                      </span>
+                    ))}
+                  </div>
+                  <div className="mt-1.5 flex flex-wrap items-center gap-1">
+                    <span className="mr-1 font-mono text-[9px] uppercase text-coral">block</span>
+                    {sandbox.blocked.map((m) => (
+                      <span key={m} className="rounded bg-coral/10 px-1.5 py-0.5 font-mono text-[9px] text-coral">
+                        {m}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </details>
+        )}
+
         {logs.length > 0 ? (
-          <div className="scroll-thin mt-2 max-h-44 overflow-auto rounded-lg border border-white/10 bg-[#06080f] p-3 font-mono text-[11.5px] leading-relaxed">
+          <div className="scroll-thin mt-2 max-h-[26rem] overflow-auto rounded-lg border border-white/10 bg-[#06080f] p-3 font-mono text-[11.5px] leading-relaxed">
             {logs.map((l) => (
               <div key={l.id} className={cn("whitespace-pre-wrap", LOG_COLOR[l.kind])}>
                 {l.text}
@@ -1533,6 +1693,7 @@ function PipelineFlow({
   results,
   ctx,
   phase,
+  agentInfo,
 }: {
   statuses: Record<AgentId, StageStatus>;
   logsByStage: Record<string, LogLine[]>;
@@ -1548,6 +1709,7 @@ function PipelineFlow({
     sandbox: string;
   };
   phase: Phase;
+  agentInfo: AgentInfo | null;
 }) {
   const inChips: [string, string][] = [
     ["dataset", ctx.dataset],
@@ -1585,6 +1747,8 @@ function PipelineFlow({
           logs={logsByStage[a.id] || []}
           io={STAGE_IO[a.id]}
           index={i}
+          info={agentInfo?.agents[a.id]}
+          sandbox={agentInfo?.sandbox}
         />
       ))}
 

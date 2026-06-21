@@ -36,7 +36,7 @@ export interface Agent {
 }
 
 /**
- * The seven-stage autonomous pipeline. Single source of truth for the
+ * The nine-stage autonomous pipeline. Single source of truth for the
  * landing-page workflow graph and the live Studio visualization.
  */
 export const AGENTS: Agent[] = [
