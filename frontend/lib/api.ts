@@ -27,6 +27,7 @@ export interface AnalyzeRequest extends LLMConfig {
   task?: string;
   e2bKey?: string;
   context?: string;
+  dataUrl?: string;
 }
 
 interface ServerEvent {
@@ -141,13 +142,14 @@ export async function streamRun(
 
 /** Upload a real CSV and stream a genuine analysis (FLAML + SHAP). */
 export async function streamAnalyze(
-  file: File,
+  file: File | null,
   req: AnalyzeRequest,
   handlers: StreamHandlers,
   signal?: AbortSignal,
 ): Promise<void> {
   const form = new FormData();
-  form.append("file", file);
+  if (file) form.append("file", file);
+  form.append("dataUrl", req.dataUrl ?? "");
   form.append("target", req.target);
   form.append("goal", req.goal);
   form.append("task", req.task ?? "auto");

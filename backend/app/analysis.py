@@ -183,6 +183,11 @@ def analyze_dataframe(
     if n_cat:
         fixes.append(f"label-encoded {n_cat} categorical feature(s)")
 
+    # automatic feature engineering (additive + transparent): log-transform skewed
+    # positives + a couple of interaction terms — the model keeps what helps.
+    if task != "nlp" and not text_terms:
+        X = _feature_eng(X, fixes)
+
     # memory: downcast the (now fully numeric) feature matrix to 32-bit
     for c in X.columns:
         try:
@@ -223,6 +228,31 @@ def analyze_dataframe(
         X, y, test_size=0.2, random_state=42, stratify=strat
     )
     n_train, n_test = int(len(X_train)), int(len(X_test))
+
+    # imbalanced classification → oversample the minority class with SMOTE (train only,
+    # so the held-out test set — and therefore the reported metrics — stays honest)
+    imbalance = None
+    if is_clf:
+        vc = pd.Series(y_train).value_counts()
+        minority, majority = int(vc.min()), int(vc.max())
+        share = minority / (minority + majority) if (minority + majority) else 0.5
+        before = {(str(classes[k]) if k < len(classes) else str(k)): int(v) for k, v in vc.items()}
+        if share < 0.35 and minority >= 6 and len(X_train) <= 200_000:
+            try:
+                from imblearn.over_sampling import SMOTE
+                X_train, y_train = SMOTE(random_state=42, k_neighbors=min(5, minority - 1)).fit_resample(X_train, y_train)
+                vc2 = pd.Series(y_train).value_counts()
+                after = {(str(classes[k]) if k < len(classes) else str(k)): int(v) for k, v in vc2.items()}
+                n_train = int(len(X_train))
+                fixes.append(f"balanced classes with SMOTE (minority was {minority}/{majority}, share {share:.0%})")
+                imbalance = {"applied": True, "method": "SMOTE", "minority_share": round(share, 3),
+                             "before": before, "after": after}
+            except Exception:  # noqa: BLE001
+                imbalance = {"applied": False, "method": "none", "minority_share": round(share, 3),
+                             "before": before, "after": before}
+        elif share < 0.35:
+            imbalance = {"applied": False, "method": "too few/many to resample", "minority_share": round(share, 3),
+                         "before": before, "after": before}
     opt_metric = "roc_auc" if (is_clf and binary) else ("accuracy" if is_clf else "r2")
 
     best_model = "model"
@@ -358,6 +388,7 @@ def analyze_dataframe(
         "_stats_tests": stats_tests,
         "_model_compare": model_compare,
         "_whatif": whatif,
+        "_imbalance": imbalance,
         "_topics": nlp_extras.get("topics") or None,
         "_sentiment": nlp_extras.get("sentiment"),
         "_keywords": nlp_extras.get("keywords") or None,
@@ -634,6 +665,33 @@ def _nlp_extras(texts: pd.Series) -> dict:
     except Exception:  # noqa: BLE001
         pass
     return out
+
+
+def _feature_eng(X: pd.DataFrame, fixes: list) -> pd.DataFrame:
+    """Conservative, additive feature engineering: log-transform skewed positive
+    columns (as new log_ columns) and add the top interaction term. Additive, so it
+    can't hurt the originals; the variance cap + model keep only what's useful."""
+    try:
+        num = [c for c in X.columns if pd.api.types.is_numeric_dtype(X[c])]
+        added: list[str] = []
+        for c in list(num):
+            s = X[c]
+            try:
+                if (s >= 0).all() and s.nunique() > 10 and float(s.skew()) > 2 and len(added) < 3:
+                    X[f"log_{c}"] = np.log1p(s)
+                    added.append(f"log_{c}")
+            except Exception:  # noqa: BLE001
+                continue
+        if len(num) >= 2:
+            var = X[num].var(numeric_only=True).fillna(0.0).sort_values(ascending=False)
+            a, b = var.index[0], var.index[1]
+            X[f"{a}_x_{b}"] = X[a] * X[b]
+            added.append(f"{a}×{b}")
+        if added:
+            fixes.append("engineered features: " + ", ".join(added))
+    except Exception:  # noqa: BLE001
+        pass
+    return X
 
 
 def _model_comparison(X_train, y_train, X_test, y_test, is_clf, binary, opt_metric, best_name, best_value) -> list:

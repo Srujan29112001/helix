@@ -232,9 +232,21 @@ async def _analyze_stream(
     yield _sse({"t": "done"})
 
 
+def _sheet_csv_url(u: str) -> str:
+    """Turn a Google Sheets share link into its CSV-export URL; pass others through."""
+    if "docs.google.com/spreadsheets" in u:
+        import re
+        m = re.search(r"/d/([a-zA-Z0-9-_]+)", u)
+        if m:
+            gid = re.search(r"[#&?]gid=(\d+)", u)
+            return f"https://docs.google.com/spreadsheets/d/{m.group(1)}/export?format=csv&gid={gid.group(1) if gid else '0'}"
+    return u
+
+
 @app.post("/api/analyze")
 async def analyze(
-    file: UploadFile = File(...),
+    file: UploadFile | None = File(None),
+    dataUrl: str = Form(""),
     target: str = Form(""),
     goal: str = Form(""),
     task: str = Form("auto"),
@@ -246,11 +258,21 @@ async def analyze(
     llms: str = Form(""),
     temperature: str = Form("0.2"),
 ) -> StreamingResponse:
-    filename = file.filename or "uploaded.csv"
+    filename = (file.filename if file else None) or (dataUrl.split("?")[0].rsplit("/", 1)[-1] if dataUrl else None) or "uploaded.csv"
     tmp_path = None
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as tmp:
-            shutil.copyfileobj(file.file, tmp)
+            if file is not None:
+                shutil.copyfileobj(file.file, tmp)
+            elif dataUrl.strip():
+                import httpx
+                resp = httpx.get(_sheet_csv_url(dataUrl.strip()), timeout=40, follow_redirects=True)
+                resp.raise_for_status()
+                tmp.write(resp.content)
+                if not filename or "." not in filename:
+                    filename = "data.csv"
+            else:
+                raise ValueError("no file or data URL provided")
             tmp_path = tmp.name
         df, _src_rows, _src_cols = _read_capped(tmp_path, filename)
     except Exception as exc:  # noqa: BLE001

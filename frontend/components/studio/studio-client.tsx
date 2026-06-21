@@ -36,6 +36,8 @@ import {
   Code2,
   MessageSquare,
   Send,
+  Link2,
+  Scale,
 } from "lucide-react";
 import { AGENTS, type AgentId, type Agent } from "@/lib/agents";
 import {
@@ -222,6 +224,7 @@ export function StudioClient() {
   const [goal, setGoal] = useState(DATASETS[0].goal);
   const [custom, setCustom] = useState<{ name: string } | null>(null);
   const [customFile, setCustomFile] = useState<File | null>(null);
+  const [dataUrl, setDataUrl] = useState("");
   const [columns, setColumns] = useState<string[]>([]);
   const [schema, setSchema] = useState<Column[]>([]);
   const [target, setTarget] = useState("");
@@ -320,8 +323,20 @@ export function StudioClient() {
     setGoal(datasetById(id).goal);
     setCustom(null);
     setCustomFile(null);
+    setDataUrl("");
     setColumns([]);
     setSchema([]);
+  };
+
+  const onDataUrl = (u: string) => {
+    setDataUrl(u);
+    if (u.trim()) {
+      setDatasetId("custom");
+      setCustomFile(null);
+      setCustom({ name: u.split("/").pop()?.split("?")[0] || "remote data" });
+      setColumns([]);
+      setSchema([]);
+    }
   };
 
   const onFile = async (file: File | undefined) => {
@@ -440,10 +455,10 @@ export function StudioClient() {
     };
     const llm = { provider, model, apiKey, temperature: dt, llms: buildLLMs() };
     const job =
-      datasetId === "custom" && customFile
+      datasetId === "custom" && (customFile || dataUrl.trim())
         ? streamAnalyze(
             customFile,
-            { goal, target, task: taskType, ...llm, e2bKey, context: contextTags.join(", ") },
+            { goal, target, task: taskType, ...llm, e2bKey, context: contextTags.join(", "), dataUrl: dataUrl.trim() },
             handlers,
             ctrl.signal,
           )
@@ -584,6 +599,8 @@ export function StudioClient() {
             setLlmMode={setLlmMode}
             setRoleLLM={setRoleLLM}
             selectDataset={selectDataset}
+            dataUrl={dataUrl}
+            onDataUrl={onDataUrl}
             onRun={run}
             onDrop={onDrop}
             setDragging={setDragging}
@@ -786,6 +803,8 @@ function Setup({
   setLlmMode,
   setRoleLLM,
   selectDataset,
+  dataUrl,
+  onDataUrl,
   onRun,
   onDrop,
   setDragging,
@@ -821,6 +840,8 @@ function Setup({
   setLlmMode: (v: "single" | "perRole") => void;
   setRoleLLM: (v: RoleLLM) => void;
   selectDataset: (id: string) => void;
+  dataUrl: string;
+  onDataUrl: (v: string) => void;
   onRun: () => void;
   onDrop: (e: DragEvent) => void;
   setDragging: (v: boolean) => void;
@@ -927,7 +948,7 @@ function Setup({
             </span>
             <div className="min-w-0">
               <div className="truncate text-sm font-medium text-white">
-                {custom ? custom.name : "Upload your own CSV"}
+                {custom ? custom.name : "Upload your own CSV / Excel / Parquet / JSON"}
               </div>
               <div className="font-mono text-[11px] text-mute">
                 {custom
@@ -943,6 +964,17 @@ function Setup({
               onChange={(e) => onFile(e.target.files?.[0] ?? undefined)}
             />
           </button>
+
+          {/* or load from a URL / Google Sheet */}
+          <div className="sm:col-span-2 flex items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.02] px-3 py-2">
+            <Link2 className="h-4 w-4 shrink-0 text-mute" />
+            <input
+              value={dataUrl}
+              onChange={(e) => onDataUrl(e.target.value)}
+              placeholder="…or paste a CSV / Google Sheets URL"
+              className="flex-1 bg-transparent py-1.5 text-sm text-mist outline-none placeholder:text-mute"
+            />
+          </div>
         </div>
 
         {datasetId === "custom" && (columns.length > 0 || !!custom) && (
@@ -2482,6 +2514,44 @@ function Results({
                 ))}
               </tbody>
             </table>
+          </div>
+        </div>
+      )}
+
+      {/* class imbalance handling (SMOTE) */}
+      {r._imbalance && (
+        <div className="rounded-2xl border border-white/10 bg-panel p-6">
+          <div className="mb-3 flex flex-wrap items-center gap-2">
+            <Scale className="h-4 w-4 text-brand" />
+            <h3 className="font-mono text-xs uppercase tracking-[0.16em] text-mute">Class imbalance</h3>
+            <span
+              className={cn(
+                "rounded-full px-2 py-0.5 font-mono text-[10px]",
+                r._imbalance.applied ? "bg-acid/15 text-acid" : "bg-gold/15 text-gold",
+              )}
+            >
+              {r._imbalance.applied ? `balanced · ${r._imbalance.method}` : "imbalanced · left as-is"}
+            </span>
+          </div>
+          <p className="mb-3 font-mono text-[11px] text-mute">
+            Minority class was {Math.round((r._imbalance.minority_share ?? 0) * 100)}% of the training data.
+            {r._imbalance.applied
+              ? " SMOTE synthesised minority examples (training only — the test set stays untouched, so metrics stay honest)."
+              : " Watch recall over raw accuracy for the rare class."}
+          </p>
+          <div className="grid gap-3 sm:grid-cols-2">
+            {([["Before", r._imbalance.before], ["After", r._imbalance.after]] as const).map(([label, counts]) => (
+              <div key={label} className="rounded-lg border border-white/10 bg-white/[0.02] p-3">
+                <div className="mb-1.5 font-mono text-[10px] uppercase tracking-wider text-mute">{label}</div>
+                <div className="flex flex-wrap gap-2">
+                  {Object.entries(counts || {}).map(([cls, n]) => (
+                    <span key={cls} className="rounded-lg border border-white/10 bg-white/[0.03] px-2 py-0.5 text-xs text-mist">
+                      {cls}: <span className="font-mono text-mute">{Number(n).toLocaleString()}</span>
+                    </span>
+                  ))}
+                </div>
+              </div>
+            ))}
           </div>
         </div>
       )}

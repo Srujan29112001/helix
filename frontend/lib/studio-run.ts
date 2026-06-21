@@ -180,6 +180,13 @@ export interface RunResults {
   _keywords?: string[] | null;
   _recommend?: { label_col: string; items: { item: string; similar: { name: string; score: number }[] }[] } | null;
   _whatif?: { feature: string; outcome: string; values: { x: number; pred: number }[] }[] | null;
+  _imbalance?: {
+    applied: boolean;
+    method: string;
+    minority_share: number;
+    before: Record<string, number>;
+    after: Record<string, number>;
+  } | null;
   _verdict?: { level: "excellent" | "good" | "fair" | "weak"; label: string; detail: string } | null;
   _source_rows?: number;
   _source_cols?: number;
