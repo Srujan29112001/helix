@@ -35,8 +35,9 @@ async def run_real(
     context: str = "",
 ) -> dict[str, Any]:
     # resolve an "Auto-detect" target for supervised tasks before anything narrates it
+    # (clustering/anomaly/dim-reduction are unsupervised → never auto-pick a target)
     auto_target = False
-    if task != "clustering" and (not target or target.strip().lower() == "auto"):
+    if task not in ("clustering", "anomaly", "dimreduction") and (not target or target.strip().lower() == "auto"):
         target = _auto_target(df)
         auto_target = True
     rows, cols = df.shape
