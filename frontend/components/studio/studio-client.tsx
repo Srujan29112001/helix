@@ -2714,25 +2714,31 @@ function Results({
         )}
       </div>
 
-      {/* line charts: distribution trend + cumulative importance (always shown) */}
-      <div className="grid gap-4 lg:grid-cols-2">
-        <div className="rounded-2xl border border-white/10 bg-panel p-5">
-          <h3 className="font-mono text-xs uppercase tracking-[0.16em] text-mute">
-            {r.distTitle} · line trend
-          </h3>
-          <div className="mt-4">
-            <LineChart items={r.dist} accent={ds.accent} />
-          </div>
+      {/* line charts: distribution trend + cumulative importance (only when there's data) */}
+      {((r.dist?.length ?? 0) >= 2 || (r.bars?.length ?? 0) >= 2) && (
+        <div className="grid gap-4 lg:grid-cols-2">
+          {(r.dist?.length ?? 0) >= 2 && (
+            <div className="rounded-2xl border border-white/10 bg-panel p-5">
+              <h3 className="font-mono text-xs uppercase tracking-[0.16em] text-mute">
+                {r.distTitle} · line trend
+              </h3>
+              <div className="mt-4">
+                <LineChart items={r.dist} accent={ds.accent} />
+              </div>
+            </div>
+          )}
+          {(r.bars?.length ?? 0) >= 2 && (
+            <div className="rounded-2xl border border-white/10 bg-panel p-5">
+              <h3 className="font-mono text-xs uppercase tracking-[0.16em] text-mute">
+                Cumulative importance · Pareto (line)
+              </h3>
+              <div className="mt-4">
+                <CumulativeArea bars={r.bars} accent={ds.accent} />
+              </div>
+            </div>
+          )}
         </div>
-        <div className="rounded-2xl border border-white/10 bg-panel p-5">
-          <h3 className="font-mono text-xs uppercase tracking-[0.16em] text-mute">
-            Cumulative importance · Pareto (line)
-          </h3>
-          <div className="mt-4">
-            <CumulativeArea bars={r.bars} accent={ds.accent} />
-          </div>
-        </div>
-      </div>
+      )}
 
       {/* box plot */}
       {r._box && r._box.boxes.length > 0 && (

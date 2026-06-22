@@ -1,6 +1,12 @@
 "use client";
 
-import { Fragment, type ReactNode } from "react";
+import {
+  Fragment,
+  useRef,
+  useState,
+  type MouseEvent as ReactMouseEvent,
+  type ReactNode,
+} from "react";
 import { motion } from "motion/react";
 import type {
   ResultBar,
@@ -21,6 +27,18 @@ export function fmtTick(v: number): string {
   return v.toFixed(2);
 }
 
+/** Fuller numeric value for tooltips (keeps a little more precision than fmtTick). */
+function fmtVal(v: number): string {
+  if (!isFinite(v)) return "—";
+  const a = Math.abs(v);
+  if (a >= 1_000_000) return `${(v / 1_000_000).toFixed(2)}M`;
+  if (a >= 10_000) return `${(v / 1000).toFixed(1)}k`;
+  if (a >= 100) return v.toFixed(0);
+  if (a >= 1) return v.toFixed(2);
+  if (a === 0) return "0";
+  return v.toFixed(3);
+}
+
 /** Best-effort numeric value from a display string ("9.7k" -> 9700, "62%" -> 62). */
 function parseNum(s: string): number {
   if (!s) return 0;
@@ -30,6 +48,110 @@ function parseNum(s: string): number {
   if (m[2] === "k" || m[2] === "K") v *= 1000;
   if (m[2] === "m" || m[2] === "M") v *= 1_000_000;
   return v;
+}
+
+/* ───────────────────────── interactive hover tooltips ─────────────────────────
+ * Every graphical chart shares one mechanism: hover a point / dot / line vertex /
+ * bar / slice and a floating tooltip shows the exact metric value(s) at that spot.
+ * `useChartTip` tracks pointer-relative position; `TipBox` renders the card;
+ * `InteractiveDots` is a reusable SVG layer (visible dot + hover ring + generous
+ * transparent hit target) used by all the line / scatter / curve charts.        */
+
+type TipRow = { k: string; v: string };
+type TipState = { x: number; y: number; w: number; h: number; title: string; rows: TipRow[] } | null;
+type MoveFn = (e: ReactMouseEvent, title: string, rows: TipRow[]) => void;
+
+function useChartTip() {
+  const ref = useRef<HTMLDivElement>(null);
+  const [tip, setTip] = useState<TipState>(null);
+  const move: MoveFn = (e, title, rows) => {
+    const r = ref.current?.getBoundingClientRect();
+    if (!r) return;
+    setTip({ x: e.clientX - r.left, y: e.clientY - r.top, w: r.width, h: r.height, title, rows });
+  };
+  const clear = () => setTip(null);
+  return { ref, tip, move, clear };
+}
+
+/** Floating value tooltip, anchored above the hovered location (clamped to the chart box). */
+function TipBox({ tip }: { tip: NonNullable<TipState> }) {
+  const half = Math.min(132, (tip.w || 264) / 2);
+  const left = Math.max(half, Math.min(tip.x, (tip.w || 264) - half));
+  const below = tip.y < 72; // flip beneath the cursor near the top edge so it never clips
+  return (
+    <div
+      className="pointer-events-none absolute z-30 max-w-[260px] rounded-lg border border-white/15 bg-[#0b1018]/95 px-2.5 py-1.5 shadow-[0_8px_24px_rgba(0,0,0,0.55)] backdrop-blur-sm"
+      style={{
+        left,
+        top: below ? tip.y + 14 : tip.y - 8,
+        transform: below ? "translate(-50%, 0)" : "translate(-50%, -100%)",
+      }}
+    >
+      {tip.title && (
+        <div className="mb-1 max-w-[240px] truncate font-mono text-[10px] uppercase tracking-wider text-cyan-300/90">
+          {tip.title}
+        </div>
+      )}
+      {tip.rows.map((r, i) => (
+        <div
+          key={i}
+          className="flex items-center justify-between gap-4 whitespace-nowrap font-mono text-[11px] leading-relaxed"
+        >
+          <span className="text-mute">{r.k}</span>
+          <span className="font-semibold text-white">{r.v}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** Reusable interactive points: visible dot + hover ring + big hit target → tooltip. */
+function InteractiveDots({
+  dots,
+  move,
+  clear,
+  showDot = true,
+}: {
+  dots: { cx: number; cy: number; r?: number; fill: string; opacity?: number; title: string; rows: TipRow[] }[];
+  move: MoveFn;
+  clear: () => void;
+  showDot?: boolean;
+}) {
+  const [hi, setHi] = useState<number | null>(null);
+  return (
+    <>
+      {dots.map((d, i) => {
+        const r = d.r ?? 4;
+        return (
+          <g key={i}>
+            {showDot && <circle cx={d.cx} cy={d.cy} r={r} fill={d.fill} opacity={d.opacity ?? 1} />}
+            {hi === i && (
+              <circle cx={d.cx} cy={d.cy} r={r + 4} fill="none" stroke="#fff" strokeWidth="1.5" opacity={0.9} />
+            )}
+            <circle
+              cx={d.cx}
+              cy={d.cy}
+              r={Math.max(9, r + 5)}
+              fill="transparent"
+              style={{ cursor: "crosshair" }}
+              onMouseEnter={(e) => {
+                setHi(i);
+                move(e, d.title, d.rows);
+              }}
+              onMouseMove={(e) => {
+                setHi(i);
+                move(e, d.title, d.rows);
+              }}
+              onMouseLeave={() => {
+                setHi((cur) => (cur === i ? null : cur));
+                clear();
+              }}
+            />
+          </g>
+        );
+      })}
+    </>
+  );
 }
 
 export function Donut({
@@ -86,7 +208,11 @@ export function Bars({ bars, accent }: { bars: ResultBar[]; accent: string }) {
     return (
       <div className="space-y-3.5">
         {bars.map((b, i) => (
-          <div key={b.label} className="grid grid-cols-[minmax(96px,180px)_1fr_52px] items-center gap-3">
+          <div
+            key={b.label}
+            className="grid grid-cols-[minmax(96px,180px)_1fr_52px] items-center gap-3"
+            title={`${b.label}: ${b.value.toFixed(3)}`}
+          >
             <span className="truncate text-right text-[13px] text-mist" title={b.label}>{b.label}</span>
             <div className="h-3.5 overflow-hidden rounded-full bg-white/5">
               <motion.div
@@ -118,7 +244,11 @@ export function Bars({ bars, accent }: { bars: ResultBar[]; accent: string }) {
         const positive = (b.sign ?? 1) >= 0;
         const col = positive ? "#25d7f0" : "#fb7185";
         return (
-          <div key={b.label} className="grid grid-cols-[minmax(96px,180px)_1fr_56px] items-center gap-3">
+          <div
+            key={b.label}
+            className="grid grid-cols-[minmax(96px,180px)_1fr_56px] items-center gap-3"
+            title={`${b.label}: ${positive ? "+" : "−"}${b.value.toFixed(3)} (${positive ? "pushes prediction up" : "pushes prediction down"})`}
+          >
             <span className="truncate text-right text-[13px] text-mist" title={b.label}>{b.label}</span>
             <div className="relative h-5">
               <div className="absolute left-1/2 top-0 h-full w-px bg-white/15" />
@@ -149,7 +279,7 @@ export function DistBars({ items, accent }: { items: DistItem[]; accent: string 
   return (
     <div className="space-y-3.5">
       {items.map((d, i) => (
-        <div key={d.label}>
+        <div key={d.label} title={`${d.label}: ${d.display}`}>
           <div className="mb-1.5 flex items-center justify-between gap-3 text-[13px]">
             <span className="truncate text-mist" title={d.label}>{d.label}</span>
             <span className="shrink-0 font-mono text-mist">{d.display}</span>
@@ -197,8 +327,10 @@ export function Pie({
   accent?: string;
 }) {
   const COLORS = [accent, "#8b5cf6", "#9ae64a", "#fb7185", "#fbbf24", "#38bdf8", "#f472b6"];
+  const { ref, tip, move, clear } = useChartTip();
   const vals = items.map((d) => Math.max(0, d.value));
   const total = vals.reduce((s, v) => s + v, 0) || 1;
+  const allZero = vals.every((v) => v === 0); // degenerate input → show a muted ring, not a blank box
   const C = 70;
   const R = 64;
   let cum = 0;
@@ -216,34 +348,54 @@ export function Pie({
     return {
       label: d.label,
       frac,
+      value: vals[i],
       color: COLORS[i % COLORS.length],
       full: frac >= 0.999,
       path: `M ${C} ${C} L ${x0.toFixed(2)} ${y0.toFixed(2)} A ${R} ${R} 0 ${large} 1 ${x1.toFixed(2)} ${y1.toFixed(2)} Z`,
     };
   });
+  const tipRows = (s: (typeof segs)[number]): TipRow[] => [
+    { k: "share", v: `${(s.frac * 100).toFixed(1)}%` },
+    { k: "value", v: fmtVal(s.value) },
+  ];
   return (
     <div className="flex flex-col items-center gap-4 sm:flex-row">
-      <svg viewBox="0 0 140 140" className="h-36 w-36 shrink-0">
-        {segs.map((s) =>
-          s.full ? (
-            <circle key={s.label} cx={C} cy={C} r={R} fill={s.color} opacity={0.92} />
-          ) : (
-            <motion.path
-              key={s.label}
-              d={s.path}
-              fill={s.color}
-              stroke="#0a0d16"
-              strokeWidth="1"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 0.92 }}
-              transition={{ duration: 0.5 }}
-            />
-          ),
-        )}
-      </svg>
+      <div ref={ref} className="relative shrink-0" onMouseLeave={clear}>
+        <svg viewBox="0 0 140 140" className="h-36 w-36">
+          {allZero && <circle cx={C} cy={C} r={R} fill="rgba(255,255,255,0.07)" stroke="#0a0d16" strokeWidth="1" />}
+          {segs.map((s) =>
+            s.full ? (
+              <circle
+                key={s.label}
+                cx={C}
+                cy={C}
+                r={R}
+                fill={s.color}
+                opacity={0.92}
+                style={{ cursor: "pointer" }}
+                onMouseMove={(e) => move(e, s.label, tipRows(s))}
+              />
+            ) : (
+              <motion.path
+                key={s.label}
+                d={s.path}
+                fill={s.color}
+                stroke="#0a0d16"
+                strokeWidth="1"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 0.92 }}
+                transition={{ duration: 0.5 }}
+                style={{ cursor: "pointer" }}
+                onMouseMove={(e) => move(e, s.label, tipRows(s))}
+              />
+            ),
+          )}
+        </svg>
+        {tip && <TipBox tip={tip} />}
+      </div>
       <div className="w-full space-y-1.5">
         {segs.map((s) => (
-          <div key={s.label} className="flex items-center gap-2 text-xs">
+          <div key={s.label} className="flex items-center gap-2 text-xs" title={`${s.label}: ${fmtVal(s.value)}`}>
             <span className="h-2.5 w-2.5 shrink-0 rounded-sm" style={{ background: s.color }} />
             <span className="truncate text-mist">{s.label}</span>
             <span className="ml-auto font-mono text-mute">{(s.frac * 100).toFixed(0)}%</span>
@@ -275,7 +427,7 @@ export function MetricsBars({
   return (
     <div className="space-y-3">
       {parsed.map((m, i) => (
-        <div key={m.label} className="grid grid-cols-[96px_1fr_42px] items-center gap-3">
+        <div key={m.label} className="grid grid-cols-[96px_1fr_42px] items-center gap-3" title={`${m.label}: ${m.value}`}>
           <span className="truncate text-right text-xs text-mist">{m.label}</span>
           <div className="h-2.5 overflow-hidden rounded-full bg-white/5">
             <motion.div
@@ -298,7 +450,7 @@ export function StatCards({ stats }: { stats: { label: string; value: string }[]
   return (
     <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
       {stats.map((s) => (
-        <div key={s.label} className="rounded-xl border border-white/10 bg-white/[0.03] px-3 py-3">
+        <div key={s.label} className="rounded-xl border border-white/10 bg-white/[0.03] px-3 py-3" title={`${s.label}: ${s.value}`}>
           <div className="truncate font-display text-lg font-semibold text-white">{s.value}</div>
           <div className="mt-0.5 font-mono text-[9px] uppercase tracking-wider text-mute">{s.label}</div>
         </div>
@@ -315,9 +467,10 @@ export function Histogram({
   bins: { label: string; count: number }[];
   accent?: string;
 }) {
+  const { ref, tip, move, clear } = useChartTip();
   const max = Math.max(...bins.map((b) => b.count), 1);
   return (
-    <div className="flex gap-2">
+    <div ref={ref} className="relative flex gap-2" onMouseLeave={clear}>
       {/* y-axis count scale */}
       <div className="flex h-56 w-10 flex-col justify-between py-0.5 text-right font-mono text-[9px] text-mute">
         {[1, 0.75, 0.5, 0.25, 0].map((g) => (
@@ -327,7 +480,16 @@ export function Histogram({
       <div className="min-w-0 flex-1">
         <div className="flex h-56 items-end gap-2 border-l border-white/10 pl-1">
           {bins.map((b, i) => (
-            <div key={i} className="flex h-full flex-1 flex-col items-center justify-end">
+            <div
+              key={i}
+              className="flex h-full flex-1 cursor-crosshair flex-col items-center justify-end"
+              onMouseMove={(e) =>
+                move(e, b.label, [
+                  { k: "count", v: b.count.toLocaleString() },
+                  { k: "share", v: `${((b.count / bins.reduce((s, x) => s + x.count, 0)) * 100).toFixed(1)}%` },
+                ])
+              }
+            >
               <span className="mb-1 font-mono text-[10px] text-mist">{b.count.toLocaleString()}</span>
               <motion.div
                 className="w-full rounded-t"
@@ -348,6 +510,7 @@ export function Histogram({
         </div>
         <div className="mt-1 text-center font-mono text-[9px] text-mute">↑ count</div>
       </div>
+      {tip && <TipBox tip={tip} />}
     </div>
   );
 }
@@ -365,6 +528,7 @@ export function Scatter({
     yr?: [number, number];
   };
 }) {
+  const { ref, tip, move, clear } = useChartTip();
   const W = 560;
   const H = 340;
   const P = 46;
@@ -372,12 +536,26 @@ export function Scatter({
   const ticks = [0, 0.25, 0.5, 0.75, 1];
   const xr = data.xr ?? [0, 1];
   const yr = data.yr ?? [0, 1];
-  const xVal = (g: number) => xr[0] + g * (xr[1] - xr[0]);
-  const yVal = (g: number) => yr[0] + g * (yr[1] - yr[0]);
+  // `|| 1` keeps a constant feature (xr=[k,k]) from printing five identical tick labels
+  const xVal = (g: number) => xr[0] + g * ((xr[1] - xr[0]) || 1);
+  const yVal = (g: number) => yr[0] + g * ((yr[1] - yr[0]) || 1);
   const px = (g: number) => P + g * (W - P - 16);
   const py = (g: number) => H - P - g * (H - P - 18);
+  const dots = data.points.map((pt) => ({
+    cx: px(pt.x),
+    cy: py(pt.y),
+    r: 4,
+    fill: col(pt.c),
+    opacity: 0.6,
+    title: `${data.x} × ${data.y}`,
+    rows: [
+      { k: data.x, v: fmtVal(xVal(pt.x)) },
+      { k: data.y, v: fmtVal(yVal(pt.y)) },
+      ...(data.legend ? [{ k: "class", v: pt.c >= 0.5 ? data.legend.high : data.legend.low }] : []),
+    ],
+  }));
   return (
-    <div>
+    <div ref={ref} className="relative" onMouseLeave={clear}>
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full" preserveAspectRatio="xMidYMid meet">
         {ticks.map((g) => (
           <g key={g}>
@@ -389,12 +567,11 @@ export function Scatter({
         ))}
         <line x1={P} y1={H - P} x2={W - 10} y2={H - P} stroke="rgba(255,255,255,0.18)" />
         <line x1={P} y1={12} x2={P} y2={H - P} stroke="rgba(255,255,255,0.18)" />
-        {data.points.map((pt, i) => (
-          <circle key={i} cx={px(pt.x)} cy={py(pt.y)} r="4" fill={col(pt.c)} opacity={0.6} />
-        ))}
+        <InteractiveDots dots={dots} move={move} clear={clear} />
         <text x={(W + P) / 2} y={H - 6} fontSize="12" fill="#9fb0c9" textAnchor="middle">{data.x} →</text>
         <text x={13} y={(H - P) / 2} fontSize="12" fill="#9fb0c9" textAnchor="middle" transform={`rotate(-90 13 ${(H - P) / 2})`}>↑ {data.y}</text>
       </svg>
+      {tip && <TipBox tip={tip} />}
       {data.legend && (
         <div className="mt-3 flex flex-wrap items-center justify-center gap-4 text-[11px] text-mist">
           <span className="flex items-center gap-1.5">
@@ -413,6 +590,7 @@ export function Scatter({
 
 /** Line chart of an ordered breakdown/distribution. */
 export function LineChart({ items, accent = "#25d7f0" }: { items: DistItem[]; accent?: string }) {
+  const { ref, tip, move, clear } = useChartTip();
   if (items.length < 2) return null;
   const W = 660;
   const H = 250;
@@ -423,8 +601,16 @@ export function LineChart({ items, accent = "#25d7f0" }: { items: DistItem[]; ac
   const ys = (v: number) => H - P - (v / max) * (H - P - 28);
   const line = items.map((d, i) => `${xs(i).toFixed(1)},${ys(d.value).toFixed(1)}`).join(" ");
   const area = `${xs(0)},${H - P} ${line} ${xs(items.length - 1)},${H - P}`;
+  const dots = items.map((d, i) => ({
+    cx: xs(i),
+    cy: ys(d.value),
+    r: 4,
+    fill: accent,
+    title: d.label,
+    rows: [{ k: "value", v: d.display }],
+  }));
   return (
-    <div>
+    <div ref={ref} className="relative" onMouseLeave={clear}>
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full" preserveAspectRatio="xMidYMid meet">
         {[0, 0.25, 0.5, 0.75, 1].map((g) => (
           <g key={g}>
@@ -439,14 +625,13 @@ export function LineChart({ items, accent = "#25d7f0" }: { items: DistItem[]; ac
         <polygon points={area} fill={alpha(accent, 0.12)} />
         <polyline points={line} fill="none" stroke={accent} strokeWidth="2.5" />
         {items.map((d, i) => (
-          <g key={i}>
-            <circle cx={xs(i)} cy={ys(d.value)} r="4" fill={accent} />
-            <text x={xs(i)} y={ys(d.value) - 10} fontSize="12" fill="#cdd8ea" textAnchor="middle">
-              {d.display}
-            </text>
-          </g>
+          <text key={i} x={xs(i)} y={ys(d.value) - 10} fontSize="12" fill="#cdd8ea" textAnchor="middle">
+            {d.display}
+          </text>
         ))}
+        <InteractiveDots dots={dots} move={move} clear={clear} />
       </svg>
+      {tip && <TipBox tip={tip} />}
       <div className="mt-1 flex gap-2">
         {items.map((d, i) => (
           <span key={i} className="flex-1 truncate text-center font-mono text-[10px] text-mute" title={d.label}>
@@ -460,6 +645,7 @@ export function LineChart({ items, accent = "#25d7f0" }: { items: DistItem[]; ac
 
 /** Radar / spider chart of feature importance. */
 export function Radar({ bars, accent = "#25d7f0" }: { bars: ResultBar[]; accent?: string }) {
+  const { ref, tip, move, clear } = useChartTip();
   const items = bars.slice(0, 6);
   const n = items.length;
   if (n < 3) return <Bars bars={bars} accent={accent} />;
@@ -472,43 +658,47 @@ export function Radar({ bars, accent = "#25d7f0" }: { bars: ResultBar[]; accent?
   ];
   const rings = [0.25, 0.5, 0.75, 1];
   const poly = items.map((b, i) => at(i, R * Math.max(0.05, b.value)).join(",")).join(" ");
+  const dots = items.map((b, i) => {
+    const [x, y] = at(i, R * Math.max(0.05, b.value));
+    return { cx: x, cy: y, r: 3, fill: accent, title: b.label, rows: [{ k: "importance", v: b.value.toFixed(3) }] };
+  });
   return (
-    <svg viewBox="0 0 300 300" className="mx-auto h-72 w-full max-w-[360px]">
-      {rings.map((r) => (
-        <polygon
-          key={r}
-          points={items.map((_, i) => at(i, R * r).join(",")).join(" ")}
-          fill="none"
-          stroke="rgba(255,255,255,0.08)"
-          strokeWidth="1"
-        />
-      ))}
-      {items.map((_, i) => {
-        const [x, y] = at(i, R);
-        return <line key={i} x1={C} y1={C} x2={x} y2={y} stroke="rgba(255,255,255,0.08)" />;
-      })}
-      <polygon points={poly} fill={alpha(accent, 0.25)} stroke={accent} strokeWidth="2" />
-      {items.map((b, i) => {
-        const [x, y] = at(i, R * Math.max(0.05, b.value));
-        return <circle key={b.label} cx={x} cy={y} r="2.5" fill={accent} />;
-      })}
-      {items.map((b, i) => {
-        const [lx, ly] = at(i, R + 22);
-        return (
-          <text
-            key={b.label}
-            x={lx}
-            y={ly}
-            fontSize="11"
-            fill="#9fb0c9"
-            textAnchor="middle"
-            dominantBaseline="middle"
-          >
-            {b.label.length > 14 ? b.label.slice(0, 13) + "…" : b.label}
-          </text>
-        );
-      })}
-    </svg>
+    <div ref={ref} className="relative" onMouseLeave={clear}>
+      <svg viewBox="0 0 300 300" className="mx-auto h-72 w-full max-w-[360px]">
+        {rings.map((r) => (
+          <polygon
+            key={r}
+            points={items.map((_, i) => at(i, R * r).join(",")).join(" ")}
+            fill="none"
+            stroke="rgba(255,255,255,0.08)"
+            strokeWidth="1"
+          />
+        ))}
+        {items.map((_, i) => {
+          const [x, y] = at(i, R);
+          return <line key={i} x1={C} y1={C} x2={x} y2={y} stroke="rgba(255,255,255,0.08)" />;
+        })}
+        <polygon points={poly} fill={alpha(accent, 0.25)} stroke={accent} strokeWidth="2" />
+        <InteractiveDots dots={dots} move={move} clear={clear} />
+        {items.map((b, i) => {
+          const [lx, ly] = at(i, R + 22);
+          return (
+            <text
+              key={b.label}
+              x={lx}
+              y={ly}
+              fontSize="11"
+              fill="#9fb0c9"
+              textAnchor="middle"
+              dominantBaseline="middle"
+            >
+              {b.label.length > 14 ? b.label.slice(0, 13) + "…" : b.label}
+            </text>
+          );
+        })}
+      </svg>
+      {tip && <TipBox tip={tip} />}
+    </div>
   );
 }
 
@@ -630,17 +820,30 @@ export function BoxPlot({
   data: { feature: string; boxes: { label: string; min: number; q1: number; med: number; q3: number; max: number }[] };
   accent?: string;
 }) {
+  const { ref, tip, move, clear } = useChartTip();
   const all = data.boxes.flatMap((b) => [b.min, b.max]);
   const lo = Math.min(...all);
   const hi = Math.max(...all);
   const sc = (v: number) => (hi > lo ? ((v - lo) / (hi - lo)) * 100 : 50);
   const colors = [accent, "#fb7185", "#9ae64a", "#fbbf24"];
   return (
-    <div className="space-y-4">
+    <div ref={ref} className="relative space-y-4" onMouseLeave={clear}>
       {data.boxes.map((b, i) => {
         const col = colors[i % colors.length];
         return (
-          <div key={b.label}>
+          <div
+            key={b.label}
+            className="cursor-crosshair"
+            onMouseMove={(e) =>
+              move(e, `${b.label} · ${data.feature}`, [
+                { k: "min", v: fmtVal(b.min) },
+                { k: "q1", v: fmtVal(b.q1) },
+                { k: "median", v: fmtVal(b.med) },
+                { k: "q3", v: fmtVal(b.q3) },
+                { k: "max", v: fmtVal(b.max) },
+              ])
+            }
+          >
             <div className="mb-1 flex justify-between text-[11px]">
               <span className="text-mist">{b.label}</span>
               <span className="font-mono text-mute">median {b.med.toFixed(0)}</span>
@@ -670,17 +873,20 @@ export function BoxPlot({
       <div className="font-mono text-[9px] text-mute">
         range {lo.toFixed(0)} – {hi.toFixed(0)} · {data.feature}
       </div>
+      {tip && <TipBox tip={tip} />}
     </div>
   );
 }
 
 /** Cumulative feature-importance (Pareto) area + line. */
 export function CumulativeArea({ bars, accent = "#25d7f0" }: { bars: ResultBar[]; accent?: string }) {
+  const { ref, tip, move, clear } = useChartTip();
+  if (!bars || bars.length < 2) return null; // no Pareto for empty / single-driver inputs (e.g. time-series)
   const total = bars.reduce((s, b) => s + b.value, 0) || 1;
   let cum = 0;
   const pts = bars.map((b) => {
     cum += b.value / total;
-    return { y: cum, label: b.label };
+    return { y: cum, label: b.label, share: b.value / total };
   });
   const W = 660;
   const H = 250;
@@ -689,8 +895,19 @@ export function CumulativeArea({ bars, accent = "#25d7f0" }: { bars: ResultBar[]
   const ys = (y: number) => H - P - y * (H - P - 20);
   const line = pts.map((p, i) => `${xs(i).toFixed(1)},${ys(p.y).toFixed(1)}`).join(" ");
   const area = `${xs(0)},${H - P} ${line} ${xs(pts.length - 1)},${H - P}`;
+  const dots = pts.map((p, i) => ({
+    cx: xs(i),
+    cy: ys(p.y),
+    r: 4,
+    fill: accent,
+    title: p.label,
+    rows: [
+      { k: "cumulative", v: `${(p.y * 100).toFixed(1)}%` },
+      { k: "this driver", v: `${(p.share * 100).toFixed(1)}%` },
+    ],
+  }));
   return (
-    <div>
+    <div ref={ref} className="relative" onMouseLeave={clear}>
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full" preserveAspectRatio="xMidYMid meet">
         {[0, 0.25, 0.5, 0.75, 1].map((g) => (
           <g key={g}>
@@ -703,11 +920,10 @@ export function CumulativeArea({ bars, accent = "#25d7f0" }: { bars: ResultBar[]
         <line x1={P} y1={ys(0.8)} x2={W - 10} y2={ys(0.8)} stroke="rgba(255,255,255,0.14)" strokeDasharray="4 4" />
         <polygon points={area} fill={alpha(accent, 0.18)} />
         <polyline points={line} fill="none" stroke={accent} strokeWidth="2.5" />
-        {pts.map((p, i) => (
-          <circle key={i} cx={xs(i)} cy={ys(p.y)} r="4" fill={accent} />
-        ))}
+        <InteractiveDots dots={dots} move={move} clear={clear} />
         <text x={W - 12} y={ys(0.8) - 6} fontSize="11" fill="#76859f" textAnchor="end">80% of signal</text>
       </svg>
+      {tip && <TipBox tip={tip} />}
       <div className="mt-1 flex gap-2">
         {pts.map((p, i) => (
           <span key={i} className="flex-1 truncate text-center font-mono text-[10px] text-mute" title={p.label}>
@@ -760,7 +976,7 @@ export function Heatmap({
               <div
                 key={ci}
                 title={`${labels[ri]} ~ ${labels[ci]}: ${v}`}
-                className="grid aspect-square place-items-center rounded-md font-mono text-[11px]"
+                className="grid aspect-square cursor-help place-items-center rounded-md font-mono text-[11px]"
                 style={{
                   background: alpha(accent, Math.max(0.05, Math.min(1, Math.abs(v)))),
                   color: Math.abs(v) > 0.6 ? "#06080f" : "#9fb0c9",
@@ -939,8 +1155,8 @@ export function ConfusionMatrix({ labels, matrix }: { labels: string[]; matrix: 
             {row.map((v, ci) => (
               <div
                 key={ci}
-                title={`actual ${labels[ri]} → predicted ${labels[ci]}: ${v}`}
-                className="grid aspect-square place-items-center rounded-md font-mono text-[12px]"
+                title={`actual ${labels[ri]} → predicted ${labels[ci]}: ${v}${ri === ci ? " (correct)" : " (error)"}`}
+                className="grid aspect-square cursor-help place-items-center rounded-md font-mono text-[12px]"
                 style={{
                   background: ri === ci ? alpha("#9ae64a", Math.max(0.08, v / max)) : alpha("#fb7185", Math.max(0.05, v / max)),
                   color: v / max > 0.5 ? "#06080f" : "#cdd8ea",
@@ -975,6 +1191,7 @@ export function Curve({
   xDomain?: [number, number];
   yDomain?: [number, number];
 }) {
+  const { ref, tip, move, clear } = useChartTip();
   if (!points || points.length < 2) return null;
   const W = 320, H = 256, P = 44;
   const sx = (x: number) => P + x * (W - P - 12);
@@ -983,27 +1200,43 @@ export function Curve({
   const ticks = [0, 0.25, 0.5, 0.75, 1];
   const xv = (g: number) => xDomain[0] + g * (xDomain[1] - xDomain[0]);
   const yv = (g: number) => yDomain[0] + g * (yDomain[1] - yDomain[0]);
+  const dots = points.map((p) => ({
+    cx: sx(p.x),
+    cy: sy(p.y),
+    r: 2.5,
+    fill: accent,
+    title: `${ylabel} vs ${xlabel}`,
+    rows: [
+      { k: xlabel, v: fmtVal(xv(p.x)) },
+      { k: ylabel, v: fmtVal(yv(p.y)) },
+    ],
+  }));
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} className="w-full" preserveAspectRatio="xMidYMid meet">
-      {ticks.map((g) => (
-        <g key={g}>
-          <line x1={P} y1={sy(g)} x2={W - 10} y2={sy(g)} stroke="rgba(255,255,255,0.05)" />
-          <text x={P - 5} y={sy(g) + 3} fontSize="9" fill="#76859f" textAnchor="end">{fmtTick(yv(g))}</text>
-          <text x={sx(g)} y={H - P + 13} fontSize="9" fill="#76859f" textAnchor="middle">{fmtTick(xv(g))}</text>
-        </g>
-      ))}
-      <line x1={P} y1={H - P} x2={W - 10} y2={H - P} stroke="rgba(255,255,255,0.18)" />
-      <line x1={P} y1={12} x2={P} y2={H - P} stroke="rgba(255,255,255,0.18)" />
-      {diagonal && <line x1={sx(0)} y1={sy(0)} x2={sx(1)} y2={sy(1)} stroke="rgba(255,255,255,0.18)" strokeDasharray="4 4" />}
-      <polyline points={line} fill="none" stroke={accent} strokeWidth="2.5" />
-      <text x={(W + P) / 2} y={H - 4} fontSize="11" fill="#9fb0c9" textAnchor="middle">{xlabel} →</text>
-      <text x={12} y={(H - P) / 2} fontSize="11" fill="#9fb0c9" textAnchor="middle" transform={`rotate(-90 12 ${(H - P) / 2})`}>↑ {ylabel}</text>
-    </svg>
+    <div ref={ref} className="relative" onMouseLeave={clear}>
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" preserveAspectRatio="xMidYMid meet">
+        {ticks.map((g) => (
+          <g key={g}>
+            <line x1={P} y1={sy(g)} x2={W - 10} y2={sy(g)} stroke="rgba(255,255,255,0.05)" />
+            <text x={P - 5} y={sy(g) + 3} fontSize="9" fill="#76859f" textAnchor="end">{fmtTick(yv(g))}</text>
+            <text x={sx(g)} y={H - P + 13} fontSize="9" fill="#76859f" textAnchor="middle">{fmtTick(xv(g))}</text>
+          </g>
+        ))}
+        <line x1={P} y1={H - P} x2={W - 10} y2={H - P} stroke="rgba(255,255,255,0.18)" />
+        <line x1={P} y1={12} x2={P} y2={H - P} stroke="rgba(255,255,255,0.18)" />
+        {diagonal && <line x1={sx(0)} y1={sy(0)} x2={sx(1)} y2={sy(1)} stroke="rgba(255,255,255,0.18)" strokeDasharray="4 4" />}
+        <polyline points={line} fill="none" stroke={accent} strokeWidth="2.5" />
+        <InteractiveDots dots={dots} move={move} clear={clear} showDot={false} />
+        <text x={(W + P) / 2} y={H - 4} fontSize="11" fill="#9fb0c9" textAnchor="middle">{xlabel} →</text>
+        <text x={12} y={(H - P) / 2} fontSize="11" fill="#9fb0c9" textAnchor="middle" transform={`rotate(-90 12 ${(H - P) / 2})`}>↑ {ylabel}</text>
+      </svg>
+      {tip && <TipBox tip={tip} />}
+    </div>
   );
 }
 
 /** Predicted vs actual for regression (points hug the diagonal when accurate). */
 export function PredVsActual({ points, accent = "#25d7f0" }: { points: { actual: number; pred: number }[]; accent?: string }) {
+  const { ref, tip, move, clear } = useChartTip();
   if (!points || points.length < 2) return null;
   const all = points.flatMap((p) => [p.actual, p.pred]);
   const lo = Math.min(...all), hi = Math.max(...all);
@@ -1013,8 +1246,21 @@ export function PredVsActual({ points, accent = "#25d7f0" }: { points: { actual:
   const sy = (v: number) => H - P - sc(v) * (H - P - 14);
   const ticks = [0, 0.25, 0.5, 0.75, 1];
   const val = (g: number) => lo + g * (hi - lo);
+  const dots = points.map((p) => ({
+    cx: sx(p.actual),
+    cy: sy(p.pred),
+    r: 3.5,
+    fill: accent,
+    opacity: 0.55,
+    title: "prediction",
+    rows: [
+      { k: "actual", v: fmtVal(p.actual) },
+      { k: "predicted", v: fmtVal(p.pred) },
+      { k: "error", v: fmtVal(p.pred - p.actual) },
+    ],
+  }));
   return (
-    <div>
+    <div ref={ref} className="relative" onMouseLeave={clear}>
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full" preserveAspectRatio="xMidYMid meet">
         {ticks.map((g) => (
           <g key={g}>
@@ -1025,13 +1271,19 @@ export function PredVsActual({ points, accent = "#25d7f0" }: { points: { actual:
         ))}
         <line x1={P} y1={H - P} x2={W - 10} y2={H - P} stroke="rgba(255,255,255,0.18)" />
         <line x1={P} y1={12} x2={P} y2={H - P} stroke="rgba(255,255,255,0.18)" />
-        <line x1={sx(lo)} y1={sy(lo)} x2={sx(hi)} y2={sy(hi)} stroke="rgba(255,255,255,0.25)" strokeDasharray="4 4" />
-        {points.map((p, i) => (
-          <circle key={i} cx={sx(p.actual)} cy={sy(p.pred)} r="3.5" fill={accent} opacity={0.55} />
-        ))}
+        <line
+          x1={hi > lo ? sx(lo) : P}
+          y1={hi > lo ? sy(lo) : H - P}
+          x2={hi > lo ? sx(hi) : W - 10}
+          y2={hi > lo ? sy(hi) : 12}
+          stroke="rgba(255,255,255,0.25)"
+          strokeDasharray="4 4"
+        />
+        <InteractiveDots dots={dots} move={move} clear={clear} />
         <text x={(W + P) / 2} y={H - 4} fontSize="11" fill="#9fb0c9" textAnchor="middle">actual →</text>
         <text x={12} y={(H - P) / 2} fontSize="11" fill="#9fb0c9" textAnchor="middle" transform={`rotate(-90 12 ${(H - P) / 2})`}>↑ predicted</text>
       </svg>
+      {tip && <TipBox tip={tip} />}
       <div className="mt-1 font-mono text-[9px] text-mute">dashed line = perfect prediction; closer dots = better</div>
     </div>
   );
@@ -1045,6 +1297,7 @@ export function ForecastChart({
   points: { label: string; value: number; kind: "history" | "forecast" }[];
   accent?: string;
 }) {
+  const { ref, tip, move, clear } = useChartTip();
   if (!points || points.length < 2) return null;
   const W = 660, H = 270, P = 48;
   const vals = points.map((p) => p.value);
@@ -1058,8 +1311,22 @@ export function ForecastChart({
   const histLine = histPts.map((p) => `${sx(p.i).toFixed(1)},${sy(p.value).toFixed(1)}`).join(" ");
   const fcLine = (lastHist ? [lastHist, ...fcPts] : fcPts).map((p) => `${sx(p.i).toFixed(1)},${sy(p.value).toFixed(1)}`).join(" ");
   const N = points.length - 1;
+  const mkDot = (p: { label: string; value: number; kind: "history" | "forecast" }, i: number) => ({
+    cx: sx(i),
+    cy: sy(p.value),
+    r: 3,
+    fill: p.kind === "forecast" ? "#fbbf24" : accent,
+    title: p.label,
+    rows: [
+      { k: "value", v: fmtVal(p.value) },
+      { k: "type", v: p.kind },
+    ],
+  });
+  // history is a clean line (invisible hover targets); forecast points stay marked
+  const histDots = points.map((p, i) => ({ p, i })).filter((o) => o.p.kind === "history").map((o) => mkDot(o.p, o.i));
+  const fcDots = points.map((p, i) => ({ p, i })).filter((o) => o.p.kind === "forecast").map((o) => mkDot(o.p, o.i));
   return (
-    <div>
+    <div ref={ref} className="relative" onMouseLeave={clear}>
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full" preserveAspectRatio="xMidYMid meet">
         {[0, 0.25, 0.5, 0.75, 1].map((g) => (
           <g key={g}>
@@ -1075,8 +1342,11 @@ export function ForecastChart({
         {lastHist && <line x1={sx(lastHist.i)} y1={12} x2={sx(lastHist.i)} y2={H - P} stroke="rgba(255,255,255,0.14)" strokeDasharray="3 3" />}
         <polyline points={histLine} fill="none" stroke={accent} strokeWidth="2.5" />
         <polyline points={fcLine} fill="none" stroke="#fbbf24" strokeWidth="2.5" strokeDasharray="6 4" />
+        <InteractiveDots dots={histDots} move={move} clear={clear} showDot={false} />
+        <InteractiveDots dots={fcDots} move={move} clear={clear} />
         <text x={(W + P) / 2} y={H - 4} fontSize="11" fill="#9fb0c9" textAnchor="middle">time →</text>
       </svg>
+      {tip && <TipBox tip={tip} />}
       <div className="mt-1 flex items-center gap-4 font-mono text-[9px] text-mute">
         <span className="flex items-center gap-1.5"><span className="h-0.5 w-4" style={{ background: accent }} /> history</span>
         <span className="flex items-center gap-1.5"><span className="h-0.5 w-4 bg-gold" /> forecast</span>
@@ -1087,6 +1357,7 @@ export function ForecastChart({
 
 /** Learning curve: training vs validation score as training data grows. */
 export function LearningCurve({ data, accent = "#25d7f0" }: { data: { n: number; train: number; val: number }[]; accent?: string }) {
+  const { ref, tip, move, clear } = useChartTip();
   if (!data || data.length < 2) return null;
   const W = 320, H = 248, P = 46;
   const ns = data.map((d) => d.n);
@@ -1097,8 +1368,18 @@ export function LearningCurve({ data, accent = "#25d7f0" }: { data: { n: number;
   const sy = (v: number) => H - P - (yhi > ylo ? (v - ylo) / (yhi - ylo) : 0.5) * (H - P - 16);
   const tline = data.map((d) => `${sx(d.n).toFixed(1)},${sy(d.train).toFixed(1)}`).join(" ");
   const vline = data.map((d) => `${sx(d.n).toFixed(1)},${sy(d.val).toFixed(1)}`).join(" ");
+  const trainDots = data.map((d) => ({
+    cx: sx(d.n), cy: sy(d.train), r: 3, fill: accent,
+    title: `${d.n.toLocaleString()} samples`,
+    rows: [{ k: "train score", v: d.train.toFixed(3) }],
+  }));
+  const valDots = data.map((d) => ({
+    cx: sx(d.n), cy: sy(d.val), r: 3, fill: "#fb7185",
+    title: `${d.n.toLocaleString()} samples`,
+    rows: [{ k: "validation", v: d.val.toFixed(3) }],
+  }));
   return (
-    <div>
+    <div ref={ref} className="relative" onMouseLeave={clear}>
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full" preserveAspectRatio="xMidYMid meet">
         {[0, 0.5, 1].map((g) => (
           <g key={g}>
@@ -1111,9 +1392,12 @@ export function LearningCurve({ data, accent = "#25d7f0" }: { data: { n: number;
         <line x1={P} y1={12} x2={P} y2={H - P} stroke="rgba(255,255,255,0.18)" />
         <polyline points={tline} fill="none" stroke={accent} strokeWidth="2.5" />
         <polyline points={vline} fill="none" stroke="#fb7185" strokeWidth="2.5" />
+        <InteractiveDots dots={trainDots} move={move} clear={clear} />
+        <InteractiveDots dots={valDots} move={move} clear={clear} />
         <text x={(W + P) / 2} y={H - 4} fontSize="11" fill="#9fb0c9" textAnchor="middle">training size →</text>
         <text x={12} y={(H - P) / 2} fontSize="11" fill="#9fb0c9" textAnchor="middle" transform={`rotate(-90 12 ${(H - P) / 2})`}>↑ score</text>
       </svg>
+      {tip && <TipBox tip={tip} />}
       <div className="mt-1 flex items-center gap-4 font-mono text-[9px] text-mute">
         <span className="flex items-center gap-1.5"><span className="h-0.5 w-4" style={{ background: accent }} /> train</span>
         <span className="flex items-center gap-1.5"><span className="h-0.5 w-4 bg-coral" /> validation</span>

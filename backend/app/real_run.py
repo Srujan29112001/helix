@@ -140,7 +140,12 @@ async def run_real(
         )
         fixed = strip_code_fences(fixed.strip()) or curated_fix
         fixes += 1
-        await emit("critic", log={"text": f"diagnosis: error on '{res.error}' — rewriting the script", "kind": "warn"})
+        # concise diagnosis = the exception line of the traceback (the full
+        # traceback was already streamed above); keep this line readable.
+        _err_lines = [ln.strip() for ln in str(res.error).splitlines() if ln.strip()]
+        diag = (_err_lines[-1] if _err_lines else str(res.error))[:160]
+        await emit("critic", log={"text": f"diagnosis: {diag}", "kind": "warn"})
+        await emit("critic", log={"text": "root cause identified — rewriting the script", "kind": "muted"})
         await emit("critic", log={"text": "# corrected code:", "kind": "muted"})
         for line in fixed.splitlines():
             await emit("critic", log={"text": line or " ", "kind": "code"})
