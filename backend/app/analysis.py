@@ -100,6 +100,26 @@ def clean(df: pd.DataFrame, target: str) -> tuple[pd.DataFrame, list[str]]:
     return df, fixes
 
 
+# Optional post-model enhancements (importance, eval diagnostics, charts, stats…)
+# are best-effort: a failure in one on a pathological dataset must degrade to a
+# sensible default, never kill the whole run. The core (model + metrics + verdict)
+# is always returned.
+_INSIGHTS_DEFAULT = {
+    "_corr": [], "_hist": None, "_graph": None, "_stats": [], "_scatter": None,
+    "_profile": [], "_quality": None, "_box": None, "_insights_text": [],
+}
+
+
+def _safe(label, fn, default):
+    """Run an optional stage; on any error log it and return ``default``."""
+    try:
+        return fn()
+    except Exception as exc:  # noqa: BLE001 — optional stage; degrade, don't crash
+        import logging
+        logging.getLogger("helix").warning("optional stage '%s' skipped: %s", label, exc)
+        return default
+
+
 def analyze_dataframe(
     df: pd.DataFrame,
     target: str,
@@ -122,9 +142,15 @@ def analyze_dataframe(
         return _survival(df, target, src_rows, src_cols)
     if task == "recommendation":
         return _recommend(df, src_rows, src_cols)
-    target = target.strip()
+    target = (target or "").strip()
+    if not target:
+        target = _auto_target(df)  # empty target on a supervised task → auto-pick
     if target not in df.columns:
-        raise ValueError(f"target column '{target}' not found in dataset")
+        cols = ", ".join(str(c) for c in list(df.columns)[:12])
+        raise ValueError(
+            f"target column '{target}' not found. Available columns: {cols}"
+            + (" …" if df.shape[1] > 12 else "")
+        )
 
     # Use as much data as a compute budget allows, scaled to dataset WIDTH:
     # narrow tables train on hundreds of thousands of rows (gradient boosting
@@ -220,13 +246,37 @@ def analyze_dataframe(
     else:
         y = pd.to_numeric(y_raw, errors="coerce").to_numpy()
         binary = False
+        # regression target can carry inf / NaN (bad parses, divide-by-zero in a
+        # source spreadsheet); drop those rows so model.fit never sees them.
+        finite = np.isfinite(y)
+        if not finite.all():
+            X, y = X[finite], y[finite]
+            features = list(X.columns)
+            fixes.append(f"dropped {int((~finite).sum())} rows with a non-numeric/infinite {target}")
+
+    if len(X) < 8:
+        raise ValueError(
+            f"not enough rows to train a reliable model — need at least 8, got {len(X)}"
+        )
 
     from sklearn.model_selection import train_test_split
 
     strat = y if (is_clf and pd.Series(y).value_counts().min() >= 2) else None
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42, stratify=strat
-    )
+    test_size = 0.2
+    if strat is not None:
+        # a stratified test split needs at least one row per class
+        n_classes = int(len(np.unique(y)))
+        if int(len(X) * test_size) < n_classes:
+            test_size = min(0.4, n_classes / len(X) + 0.05)
+    try:
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=test_size, random_state=42, stratify=strat
+        )
+    except ValueError:
+        # tiny / awkward class counts → fall back to an unstratified split
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=max(0.2, test_size), random_state=42, stratify=None
+        )
     n_train, n_test = int(len(X_train)), int(len(X_test))
 
     # imbalanced classification → oversample the minority class with SMOTE (train only,
@@ -324,23 +374,25 @@ def analyze_dataframe(
             preds = model.predict(X_test)
         best_model = "HistGradientBoosting"
 
+    # core — must succeed (if metrics can't be computed there is no result)
     metrics, headline, task_label = _score(is_clf, binary, y_test, preds, proba)
     verdict = _model_quality(is_clf, binary, headline, y)
-    eval_detail = _eval_detail(model, X_train, y_train, X_test, y_test, preds, proba, is_clf, classes, opt_metric)
-    model_compare = _model_comparison(X_train, y_train, X_test, y_test, is_clf, binary, opt_metric, best_model, headline["fraction"])
-    whatif = _whatif(model, X, features, is_clf, binary, classes, target=target)
-    bars, bars_title = _importance(model, X, X_test, y_test, y, features, is_clf)
+    # optional enhancements — best-effort so one pathological dataset can't kill the run
+    eval_detail = _safe("eval", lambda: _eval_detail(model, X_train, y_train, X_test, y_test, preds, proba, is_clf, classes, opt_metric), {})
+    model_compare = _safe("compare", lambda: _model_comparison(X_train, y_train, X_test, y_test, is_clf, binary, opt_metric, best_model, headline["fraction"]), None)
+    whatif = _safe("whatif", lambda: _whatif(model, X, features, is_clf, binary, classes, target=target), None)
+    bars, bars_title = _safe("importance", lambda: _importance(model, X, X_test, y_test, y, features, is_clf), ([], "Feature importance"))
     if text_terms:  # NLP: surface themes instead of opaque TF-IDF dims
         bars = [{"label": t, "value": v} for t, v in text_terms]
         bars_title = "Top themes"
         task_label = "NLP + analytics"
-    dist, dist_title = _eda(df, target, features, bars, is_clf, positive_label, y_raw)
+    dist, dist_title = _safe("eda", lambda: _eda(df, target, features, bars, is_clf, positive_label, y_raw), ([], "Distribution"))
 
-    report, recommendation = _default_report(
-        target, task_label, headline, bars, dist, dist_title
-    )
-    insights = _insights(df, X, y, target, bars, dist, is_clf, features)
-    stats_tests = _statistics(df, target, is_clf, bars)
+    report, recommendation = _safe("report", lambda: _default_report(target, task_label, headline, bars, dist, dist_title), ([f"Model trained to predict {target}."], ""))
+    insights = _safe("insights", lambda: _insights(df, X, y, target, bars, dist, is_clf, features), dict(_INSIGHTS_DEFAULT))
+    for _k, _v in _INSIGHTS_DEFAULT.items():
+        insights.setdefault(_k, _v)
+    stats_tests = _safe("stats", lambda: _statistics(df, target, is_clf, bars), None)
     if insights.get("_scatter"):
         if is_clf and len(classes) >= 2:
             low = f"{target} = {classes[0]}"

@@ -81,11 +81,16 @@ async def run_real(
     docs = await loop.run_in_executor(None, lambda: retrieve(f"{goal} {target}", 3))
     for d in docs:
         await emit("coder", log={"text": "  RAG doc: " + d, "kind": "muted"})
-    safe_target = target.replace('"', "").replace("\\", "")
+    safe_target = (target or "").replace('"', "").replace("\\", "")
+    # only profile the target line when there actually IS a target column
+    # (clustering / anomaly / dim-reduction / recommendation are unsupervised) —
+    # otherwise df["<missing>"] would crash the snippet before the demo even starts.
+    has_tgt = bool(safe_target) and safe_target in df.columns
+    tgt_line = f'print("target {safe_target}:", df["{safe_target}"].nunique(), "unique")\n' if has_tgt else ""
     curated_code = (
         'print("rows:", df.shape[0], " cols:", df.shape[1])\n'
-        f'print("target {safe_target}:", df["{safe_target}"].nunique(), "unique")\n'
-        'print("column means:")\n'
+        + tgt_line
+        + 'print("column means:")\n'
         "print(df.mean(numeric_only=False).round(2).to_string())"
     )
     curated_fix = curated_code.replace("numeric_only=False", "numeric_only=True")
@@ -164,7 +169,22 @@ async def run_real(
         await emit("executor", status="active")
         await emit("executor", log={"text": ">>> re-running patched code...", "kind": "muted"})
     if not ran_ok:
-        await emit("executor", log={"text": "could not auto-fix in 5 tries; using the trusted engine", "kind": "warn"})
+        # Safety net: the LLM critic couldn't fix it in 5 tries. Run the
+        # guaranteed-safe profiling snippet (numeric_only=True works on ANY frame)
+        # so the Executor always ends on clean output instead of looking broken.
+        await emit("critic", status="active")
+        await emit("critic", log={"text": "5 tries exhausted — falling back to the trusted profiling snippet", "kind": "warn"})
+        res = await loop.run_in_executor(None, lambda: execute_code(curated_fix, df, e2b_key))
+        await emit("critic", status="done")
+        if res.ok:
+            await emit("executor", log={"text": "--- stdout (safe fallback) ---", "kind": "muted"})
+            for line in (res.stdout or "").rstrip().splitlines() or ["(no output)"]:
+                await emit("executor", log={"text": line, "kind": "code"})
+            await emit("executor", log={"text": "OK recovered with the trusted profiling snippet", "kind": "ok"})
+            ran_ok = True
+            fixes += 1
+        else:
+            await emit("executor", log={"text": "profiling skipped; the trusted ML engine still runs the full analysis", "kind": "warn"})
     # the Critic only runs on a failure — if the code passed first try, say so
     # explicitly so the agent never looks stuck at "queued".
     if fixes == 0:

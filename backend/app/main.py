@@ -217,10 +217,18 @@ async def _analyze_stream(
         try:
             results = await run_real(df, target, goal, task, emit, e2b_key=e2b_key, context=context)
             await queue.put({"t": "result", "results": results})
+        except ValueError as exc:
+            # expected preconditions (too few rows/points, target not found, task
+            # unsuitable for this data) → a clear, friendly message, not a crash
+            await queue.put(
+                {"t": "event", "stage": "executor", "status": "error",
+                 "log": {"text": "This data can't be analyzed with the selected task — " + str(exc)
+                                 + ". Try a different task type, target column, or a larger dataset.", "kind": "err"}}
+            )
         except Exception as exc:  # noqa: BLE001
             await queue.put(
-                {"t": "event", "stage": "reporter", "status": "error",
-                 "log": {"text": "analysis error: " + str(exc), "kind": "err"}}
+                {"t": "event", "stage": "executor", "status": "error",
+                 "log": {"text": "Analysis error: " + str(exc), "kind": "err"}}
             )
         finally:
             await queue.put(None)
