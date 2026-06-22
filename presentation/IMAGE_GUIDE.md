@@ -1,120 +1,112 @@
 # Helix deck — image guide
 
-Everything the **20-slide deck** (`Helix_Project_Deck.pptx`) needs for its imagery.
+Everything the **22-slide deck** (`Helix_Project_Deck.pptx`, built by
+`build_project_deck.py`) uses for imagery. **All 11 images are already embedded** —
+the deck is complete as-is. This file documents what each image is and how to
+replace any of them.
 
-The build script (`build_project_deck.py`) auto-embeds any file that exists in
-`presentation/assets/` with the exact filename below; anything missing is drawn
-as a labelled placeholder frame so the deck is always complete. **Drop a file in,
-re-run the script, done:**
+Rebuild any time with:
 
 ```bash
 python presentation/build_project_deck.py
 ```
 
----
-
-## 1. App screenshots — ✅ already captured
-
-These four are already in `presentation/assets/` (captured headless at 1440×810 @2×
-against the live app on `localhost:3000`, telco-churn run). They are **embedded** in
-the current deck. Re-capture only if the UI changes — instructions kept here for that.
-
-| File | Slide | Screen | State captured |
-|------|-------|--------|----------------|
-| `05_landing.png` | 5 | Landing page | Hero — "writes its own code — and fixes it" |
-| `06_studio.png` | 6 | Studio | "New analysis" setup (samples, upload, goal, Run) |
-| `10_pipeline.png` | 10 | Pipeline tab | Mid-stream — Planner plan, Coder RAG docs, Critic "1 fix" |
-| `11_results_telco.png` | 11 | Results tab | **Telco churn** — verdict 0.83, metrics, key findings |
-
-**To re-capture** (after a UI change): start the frontend (`npm run dev`, with
-`.env.local → NEXT_PUBLIC_API_URL=http://localhost:8000` and the backend running),
-then re-run the Playwright capture, or grab them by hand:
-- Landing: `localhost:3000`, top of page.
-- Studio: `localhost:3000/studio`, the setup step.
-- Pipeline: upload `data/telco_churn.csv`, target **Churn**, task **Classification**,
-  click **Run analysis**, screenshot the Pipeline tab while agents stream.
-- Results: wait for the run to finish, open the **Results** tab, screenshot the top
-  (verdict band + metrics + key findings).
-
-> Tip: a 16:9 crop (e.g. 1440×810) drops straight into the slide frames.
+The script auto-embeds every file in `presentation/assets/` by name and draws a
+labelled placeholder for anything missing.
 
 ---
 
-## 2. AI image to generate — nanobanana 2
+## 1. Real app screenshots — ✅ captured (live, on a telco-churn run)
 
-Only **one** image is needed (the title-slide hero). Optional extras are listed after.
+Captured headless via Playwright at 2880×1620 (16:9) against the live app.
 
-### ⭐ REQUIRED — `01_hero.png` (Slide 1, title)
+| File | Slide | Screen |
+|------|-------|--------|
+| `05_landing.png` | 2 | Landing hero — "writes its own code — and fixes it" |
+| `06_studio.png` | 10 | Studio setup (samples, upload, goal, target, task, AI engine) |
+| `10_pipeline.png` | 11 | Pipeline mid-stream — Planner plan, Coder RAG docs, Critic "1 fix" |
+| `11_results_telco.png` | 12 | Results on **Telco Churn** — verdict 0.83, metrics, key findings |
 
-> **Filename:** `presentation/assets/01_hero.png`  ·  **Aspect:** portrait-ish 3:4
-> (it fills the right third of a 16:9 slide; ~1100×1500 px is plenty).
-
-**Prompt:**
-```
-A dark, premium abstract illustration of an autonomous AI "data scientist" —
-a glowing neural network of interconnected nodes flowing into a clean data
-dashboard. Deep near-black navy background (#04060F) with a soft radial glow.
-Nodes and connection lines in electric cyan (#25D7F0) and violet (#8B5CF6),
-with subtle accents of acid-green and gold. A faint grid and scattered data
-points / tiny bar-chart and line-chart glyphs woven into the network. Elegant,
-minimal, high-tech, cinematic depth of field, no text, no logos, no human faces.
-Vertical composition, the network denser toward the top-right, fading into dark
-empty space on the left so it blends into a dark slide. Style: modern SaaS hero
-art, sleek, sophisticated, slightly futuristic.
-```
-*Negative / avoid:* text, watermarks, logos, human faces, cluttered edges, bright
-white background, cartoonish look.
+**To re-capture** after a UI change: run the frontend (`npm run dev`, backend up,
+`.env.local → NEXT_PUBLIC_API_URL=http://localhost:8000`) and screenshot a 16:9
+crop, or re-run the Playwright capture. Keep the same filenames and the deck
+re-embeds them automatically.
 
 ---
 
-### Optional extras (only if you want more imagery)
+## 2. Hero / section art — ✅ reused from your "HELIX" deck
 
-The deck's technical diagrams (architecture, self-heal loop, engine pipeline) are
-already drawn natively in PowerPoint — crisp and on-brand — so **no diagram images
-are required**. These are purely optional decorative backgrounds:
+These eight visuals were extracted from your existing
+*HELIX — The Autonomous Data Scientist* deck, recompressed (≈300–430 KB each, was
+4–6 MB), and reused — so the rebuilt deck is fully imaged with no regeneration
+needed.
 
-**`opt_closing_bg.png`** — could sit behind Slide 20 (closing). Not wired in by
-default; add an `embed(...)` call if you want it.
-```
-Ultra-wide dark abstract banner: a single luminous data-pipeline line travelling
-left to right across a near-black navy field (#04060F), starting as a messy CSV
-grid on the left and resolving into a clean glowing upward chart on the right.
-Electric cyan (#25D7F0) to violet (#8B5CF6) gradient along the line, soft bloom,
-faint particles. Minimal, cinematic, no text, no faces. 16:9.
-```
-
-**`opt_problem_art.png`** — optional accent for Slide 2 (the problem).
-```
-Dark minimal conceptual illustration: a long queue of small abstract figures
-waiting in front of a single glowing data terminal, representing a bottleneck.
-Near-black navy background, coral-red (#FB7185) and muted tones, one cyan glow
-at the terminal. Flat, elegant, no text, no detailed faces. 16:9.
-```
+| File | Slide | What it is |
+|------|-------|-----------|
+| `art_hero.jpg` | 1 | Neural-mandala title hero |
+| `art_problem.jpg` | 3 | "The problem" illustration |
+| `diagram_architecture.png` | 5 | The full system-architecture diagram (kept as PNG for crisp labels) |
+| `art_backend.jpg` | 13 | Code-monitor / backend art (landscape) |
+| `art_brain.jpg` | 15 | AI-brain art (LLM providers) |
+| `art_security.jpg` | 19 | Shield art (security) |
+| `art_conclusion.jpg` | 22 | Future-city closing hero |
 
 ---
 
-## 3. Diagram prompts (alternative, if you'd rather generate them than use the native ones)
+## 3. Optional — regenerate a hero with nanobanana 2
 
-If you prefer AI-generated diagrams over the built-in PowerPoint shapes, here are
-prompts that match the deck's content. (Recommended: keep the native ones — they're
-accurate and editable.)
+Only do this if you want a *different* image. Drop the new file in
+`presentation/assets/` under the **same filename** and re-run the build. Portrait
+heroes are placed full-height on the right (use a ~2:3 portrait, e.g. 1440×2160);
+keep the dark navy palette (#04060F) so text stays readable on the left.
 
-**Architecture (Slide 7):**
+**`art_hero.jpg` — title (Slide 1)**
 ```
-Clean technical diagram on a dark navy background (#04060F): nine labelled nodes
-in a horizontal pipeline — Planner, Coder, Executor, Critic, AutoML, Explainer,
-Visualizer, Researcher, Reporter — connected left to right by glowing arrows.
-A curved feedback arrow loops from "Critic" back to "Executor" labelled
-"self-correction ≤5". Each node a rounded chip with a distinct accent colour
-(violet, cyan, azure, gold, acid-green, magenta, teal, iris, coral). Minimal,
-flat, modern, crisp labels, no clutter. 16:9.
+A dark, premium abstract illustration of an autonomous AI "data scientist": a
+glowing neural network / mandala of interconnected nodes on a near-black navy
+background (#04060F), electric cyan (#25D7F0) and violet (#8B5CF6) light, faint
+circuit traces and binary digits. Portrait 2:3, denser toward the centre-right,
+fading into dark on the left. No text, no logos, no faces. Sleek, cinematic.
 ```
 
-**Engine pipeline (Slide 16):**
+**`art_problem.jpg` — the problem (Slide 3)**
 ```
-Horizontal flow diagram on dark navy (#04060F): seven stages connected by arrows —
-"Clean & encode → Detect task → FLAML AutoML → SHAP explain → EDA + stats →
-Build charts → Quality verdict". Each stage a rounded chip with a cyan/violet/
-acid-green accent and a tiny matching icon. Sleek, minimal, technical, no extra
-text. 16:9.
+Dark conceptual illustration of an analytics bottleneck: an overwhelmed analyst at
+a desk buried in spreadsheets and tangled data pipes, one small cyan glow of
+insight far away. Near-black navy background, coral-red (#FB7185) accents, muted
+tones. Portrait 2:3, no text, no readable faces. Editorial, moody.
 ```
+
+**`art_brain.jpg` — AI models (Slide 15)**
+```
+A glowing AI brain made of interconnected neural nodes and circuit traces on a
+near-black navy field (#04060F), electric cyan (#25D7F0) and violet (#8B5CF6)
+light with pink accents. Portrait 2:3, centered, no text, no face. High-tech,
+premium.
+```
+
+**`art_security.jpg` — security (Slide 19)**
+```
+A luminous translucent shield wrapped in circuit traces and orbiting energy rings
+on a dark navy background (#04060F), electric cyan (#25D7F0) glow with subtle
+lightning. Portrait 2:3, centered, no text. Sleek, protective, high-tech.
+```
+
+**`art_conclusion.jpg` — closing (Slide 22)**
+```
+A futuristic data-city at dusk: glowing skyline of light-trails and data streams
+resolving upward, near-black navy to cyan/violet gradient (#04060F → #25D7F0 →
+#8B5CF6), warm horizon accent. Portrait 2:3, cinematic, no text. Optimistic,
+forward-looking.
+```
+
+**`art_backend.jpg` — backend (Slide 13)** — landscape (~16:10)
+```
+A developer workstation at night: a monitor showing clean glowing Python code, a
+desk with subtle plants, cyan/violet rim light on a near-black navy scene
+(#04060F). Landscape, no readable text on screen, no face. Sleek, focused.
+```
+
+**`diagram_architecture.png` (Slide 5)** — this is a real labelled diagram, not AI
+art; keep it as-is (or redraw natively). If you must regenerate as an image, see
+the architecture prompt in the prior guide — but the native diagram is clearer.

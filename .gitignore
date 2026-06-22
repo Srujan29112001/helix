@@ -21,3 +21,7 @@ backend/eval/results.json
 # Tooling / OS
 .claude/
 .DS_Store
+
+# Office lock/temp files
+~$*
+*.~vsdx
