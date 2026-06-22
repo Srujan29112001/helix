@@ -183,7 +183,12 @@ export interface RunResults {
   _sentiment?: { positive: number; neutral: number; negative: number } | null;
   _keywords?: string[] | null;
   _recommend?: { label_col: string; items: { item: string; similar: { name: string; score: number }[] }[] } | null;
-  _whatif?: { feature: string; outcome: string; values: { x: number; pred: number }[] }[] | null;
+  _whatif?: {
+    outcome: string;
+    target: string;
+    baseline: number;
+    features: { feature: string; median: number; values: { x: number; pred: number }[] }[];
+  } | null;
   _imbalance?: {
     applied: boolean;
     method: string;

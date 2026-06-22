@@ -129,11 +129,12 @@ class OpenAICompatibleLLM(LLMProvider):
 
     is_mock = False
 
-    def __init__(self, base_url: str, api_key: str, model: str, temperature: float = 0.2):
+    def __init__(self, base_url: str, api_key: str, model: str, temperature: float = 0.2, max_tokens: int | None = None):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.model = model
         self.temperature = temperature
+        self.max_tokens = max_tokens
 
     async def acomplete(self, role: str, context: dict[str, Any]) -> str:
         import httpx
@@ -147,6 +148,8 @@ class OpenAICompatibleLLM(LLMProvider):
             ],
             "temperature": self.temperature,
         }
+        if self.max_tokens:
+            payload["max_tokens"] = self.max_tokens
         headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
@@ -164,18 +167,19 @@ class AnthropicLLM(LLMProvider):
 
     is_mock = False
 
-    def __init__(self, base_url: str, api_key: str, model: str, temperature: float = 0.2):
+    def __init__(self, base_url: str, api_key: str, model: str, temperature: float = 0.2, max_tokens: int = 2048):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.model = model
         self.temperature = temperature
+        self.max_tokens = max_tokens or 2048  # Anthropic requires a positive max_tokens
 
     async def acomplete(self, role: str, context: dict[str, Any]) -> str:
         import httpx
 
         payload = {
             "model": self.model,
-            "max_tokens": 1024,
+            "max_tokens": self.max_tokens,
             "temperature": self.temperature,
             "system": _SYSTEM.get(role, "You are a helpful assistant."),
             "messages": [{"role": "user", "content": _build_user_prompt(role, context)}],
@@ -299,16 +303,29 @@ def _clamp_temp(temperature) -> float:
         return 0.2
 
 
-def make_llm(provider: str, model: str | None, api_key: str | None, temperature: float = 0.2) -> LLMProvider:
-    """Build a provider from an explicit (provider, model, key, temperature) — e.g. sent from the UI."""
+def _clamp_tokens(max_tokens) -> int | None:
+    """Clamp a max-tokens value to a sane window; None/blank → provider default."""
+    try:
+        n = int(float(max_tokens))
+    except (TypeError, ValueError):
+        return None
+    if n <= 0:
+        return None
+    return max(256, min(8192, n))
+
+
+def make_llm(provider: str, model: str | None, api_key: str | None,
+             temperature: float = 0.2, max_tokens=None) -> LLMProvider:
+    """Build a provider from an explicit (provider, model, key, temperature, max_tokens) — e.g. sent from the UI."""
     if not api_key:
         return MockLLM()
     base, kind = PROVIDERS.get(provider, PROVIDERS["groq"])
     model = model or _DEFAULT_MODEL.get(provider, "llama-3.3-70b-versatile")
     temp = _clamp_temp(temperature)
+    mt = _clamp_tokens(max_tokens)
     if kind == "anthropic":
-        return AnthropicLLM(base, api_key, model, temp)
-    return OpenAICompatibleLLM(base, api_key, model, temp)
+        return AnthropicLLM(base, api_key, model, temp, mt or 2048)
+    return OpenAICompatibleLLM(base, api_key, model, temp, mt)
 
 
 # Per-request override, set by the API endpoint from the UI's config.
@@ -344,7 +361,11 @@ def get_llm(role: str) -> LLMProvider:
         temp = rc.get("temperature")
         if temp is None:
             temp = (cfg.get("default") or {}).get("temperature", 0.2)
-        return make_llm(rc.get("provider") or "groq", rc.get("model"), rc["api_key"], temp)
+        # max_tokens: role-specific, else the default entry's, else provider default
+        mt = rc.get("max_tokens")
+        if mt is None:
+            mt = (cfg.get("default") or {}).get("max_tokens")
+        return make_llm(rc.get("provider") or "groq", rc.get("model"), rc["api_key"], temp, mt)
     base_url, api_key, model = _resolve(role)
     if base_url or api_key:
         return OpenAICompatibleLLM(

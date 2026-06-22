@@ -81,6 +81,7 @@ class SandboxResult:
     stdout: str
     error: str  # short, last line of the traceback when ok is False
     engine: str = "restrictedpython"  # which backend executed the code
+    note: str = ""  # e.g. why E2B was skipped and we fell back to RestrictedPython
 
 
 def _short(msg: str) -> str:
@@ -141,7 +142,10 @@ def run_in_e2b(code: str, df: "pd.DataFrame", api_key: str | None = None) -> San
     from e2b_code_interpreter import Sandbox  # imported lazily (optional dep)
 
     csv = df.to_csv(index=False)
-    with Sandbox(api_key=api_key, timeout=120) as sbx:  # microVM auto-killed on context exit
+    # SDK v2.x: the bare ``Sandbox(...)`` constructor no longer accepts api_key/
+    # timeout — use the ``create()`` factory. ``timeout`` here is the microVM
+    # lifetime; the per-exec timeout is passed to ``run_code`` below.
+    with Sandbox.create(api_key=api_key, timeout=120) as sbx:  # microVM auto-killed on context exit
         sbx.files.write("/home/user/data.csv", csv)
         prelude = (
             "import pandas as pd, numpy as np\n"
@@ -166,12 +170,16 @@ def execute_code(code: str, df: "pd.DataFrame", e2b_key: str | None = None) -> S
     RestrictedPython sandbox. A run never breaks.
     """
     key = e2b_key or os.getenv("E2B_API_KEY")
+    fallback_note = ""
     if key:
         try:
             return run_in_e2b(code, df, key)
-        except Exception as exc:  # noqa: BLE001 — SDK missing / network / quota → fall back
-            print(f"[sandbox] E2B unavailable, falling back to RestrictedPython: {exc}")
-    return run_in_sandbox(code, {"df": df.copy()})
+        except Exception as exc:  # noqa: BLE001 — SDK missing / network / quota / bad key → fall back
+            fallback_note = f"E2B unavailable ({type(exc).__name__}: {_short(str(exc))}) — using RestrictedPython"
+            print(f"[sandbox] {fallback_note}")
+    res = run_in_sandbox(code, {"df": df.copy()})
+    res.note = fallback_note
+    return res
 
 
 def strip_code_fences(text: str) -> str:

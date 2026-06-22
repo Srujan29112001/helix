@@ -111,10 +111,10 @@ def _read_capped(path: str, filename: str = "", max_rows: int = 500_000) -> tupl
     return df, approx, cols
 
 
-def _llm_config(llms, provider, model, api_key, temperature="0.2") -> dict | None:
+def _llm_config(llms, provider, model, api_key, temperature="0.2", max_tokens="") -> dict | None:
     """Build the per-role LLM config from an explicit ``llms`` map (dict or JSON
     string) or fall back to the legacy single provider/model/apiKey fields.
-    Each role config may carry its own ``temperature``."""
+    Each role config may carry its own ``temperature`` and ``max_tokens``."""
     if isinstance(llms, str) and llms.strip():
         try:
             llms = json.loads(llms)
@@ -123,8 +123,11 @@ def _llm_config(llms, provider, model, api_key, temperature="0.2") -> dict | Non
     if isinstance(llms, dict) and llms:
         return llms
     if api_key:
-        return {"default": {"provider": provider or "groq", "model": model,
-                            "api_key": api_key, "temperature": temperature}}
+        cfg = {"provider": provider or "groq", "model": model,
+               "api_key": api_key, "temperature": temperature}
+        if str(max_tokens).strip():
+            cfg["max_tokens"] = max_tokens
+        return {"default": cfg}
     return None
 
 
@@ -202,6 +205,7 @@ async def _analyze_stream(
     context: str,
     llms: str,
     temperature: str = "0.2",
+    max_tokens: str = "",
 ):
     queue: asyncio.Queue = asyncio.Queue()
 
@@ -209,7 +213,7 @@ async def _analyze_stream(
         await queue.put({"t": "event", "stage": stage, "status": status, "log": log})
 
     async def driver() -> None:
-        set_llm_override(_llm_config(llms, provider, model, api_key, temperature))
+        set_llm_override(_llm_config(llms, provider, model, api_key, temperature, max_tokens))
         try:
             results = await run_real(df, target, goal, task, emit, e2b_key=e2b_key, context=context)
             await queue.put({"t": "result", "results": results})
@@ -257,6 +261,7 @@ async def analyze(
     context: str = Form(""),
     llms: str = Form(""),
     temperature: str = Form("0.2"),
+    maxTokens: str = Form(""),
 ) -> StreamingResponse:
     filename = (file.filename if file else None) or (dataUrl.split("?")[0].rsplit("/", 1)[-1] if dataUrl else None) or "uploaded.csv"
     tmp_path = None
@@ -294,7 +299,7 @@ async def analyze(
 
     return StreamingResponse(
         _analyze_stream(
-            df, target, goal, task, filename, provider, model, apiKey, e2bKey, context, llms, temperature
+            df, target, goal, task, filename, provider, model, apiKey, e2bKey, context, llms, temperature, maxTokens
         ),
         media_type="text/event-stream",
         headers=_SSE_HEADERS,

@@ -11,8 +11,10 @@ export interface LLMConfig {
   model?: string;
   apiKey?: string;
   temperature?: number;
-  /** optional per-role config: { default: {...}, coder: {provider, model, api_key, temperature}, ... } */
-  llms?: Record<string, { provider?: string; model?: string; api_key?: string; temperature?: number }>;
+  /** max response tokens (blank/0 = provider default) */
+  maxTokens?: number;
+  /** optional per-role config: { default: {...}, coder: {provider, model, api_key, temperature, max_tokens}, ... } */
+  llms?: Record<string, { provider?: string; model?: string; api_key?: string; temperature?: number; max_tokens?: number }>;
 }
 
 export interface RunRequest extends LLMConfig {
@@ -160,6 +162,7 @@ export async function streamAnalyze(
   form.append("context", req.context ?? "");
   form.append("llms", req.llms ? JSON.stringify(req.llms) : "");
   form.append("temperature", String(req.temperature ?? 0.2));
+  form.append("maxTokens", req.maxTokens ? String(req.maxTokens) : "");
   const res = await fetch(`${API_URL}/api/analyze`, {
     method: "POST",
     body: form,

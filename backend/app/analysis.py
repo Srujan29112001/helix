@@ -328,7 +328,7 @@ def analyze_dataframe(
     verdict = _model_quality(is_clf, binary, headline, y)
     eval_detail = _eval_detail(model, X_train, y_train, X_test, y_test, preds, proba, is_clf, classes, opt_metric)
     model_compare = _model_comparison(X_train, y_train, X_test, y_test, is_clf, binary, opt_metric, best_model, headline["fraction"])
-    whatif = _whatif(model, X, features, is_clf, binary, classes)
+    whatif = _whatif(model, X, features, is_clf, binary, classes, target=target)
     bars, bars_title = _importance(model, X, X_test, y_test, y, features, is_clf)
     if text_terms:  # NLP: surface themes instead of opaque TF-IDF dims
         bars = [{"label": t, "value": v} for t, v in text_terms]
@@ -749,10 +749,14 @@ def _model_comparison(X_train, y_train, X_test, y_test, is_clf, binary, opt_metr
     return out
 
 
-def _whatif(model, X, features, is_clf, binary, classes, n_feats=4, grid=11) -> list | None:
+def _whatif(model, X, features, is_clf, binary, classes, target="", n_feats=4, grid=11) -> dict | None:
     """Precompute 1-D partial-dependence curves for the top features: vary one
     feature across its range (holding the rest at the median) and record the model's
-    prediction. Powers a live 'what-if' simulator with zero extra server calls."""
+    prediction. Also records the all-median ``baseline`` and each feature's median,
+    so the frontend can combine the sliders into ONE prediction (an additive
+    surrogate: baseline + the sum of each feature's effect) — a live 'what-if'
+    simulator with zero extra server calls, where moving any slider updates the
+    shared prediction."""
     if is_clf and not binary:
         return None
     try:
@@ -766,9 +770,13 @@ def _whatif(model, X, features, is_clf, binary, classes, n_feats=4, grid=11) -> 
                     return model.predict(M).astype(float)
             return model.predict(M)
 
+        # baseline = prediction with EVERY feature at its median (the shared neutral point)
+        base_row = pd.DataFrame([base.to_dict()])[X.columns]
+        baseline = float(predict(base_row)[0])
+
         var = X.var(numeric_only=True).fillna(0.0).sort_values(ascending=False)
         cols = [c for c in var.index][:n_feats]
-        out = []
+        feats = []
         for c in cols:
             col = pd.to_numeric(X[c], errors="coerce").dropna()
             lo, hi = float(col.quantile(0.05)), float(col.quantile(0.95))
@@ -778,10 +786,19 @@ def _whatif(model, X, features, is_clf, binary, classes, n_feats=4, grid=11) -> 
             rows = pd.DataFrame([base.to_dict()] * grid)[X.columns]
             rows[c] = xs
             preds = predict(rows[X.columns])
-            out.append({"feature": str(c),
-                        "outcome": "probability" if is_clf else "value",
-                        "values": [{"x": round(float(x), 4), "pred": round(float(p), 4)} for x, p in zip(xs, preds)]})
-        return out or None
+            feats.append({
+                "feature": str(c),
+                "median": round(float(base.get(c, float(np.median(xs)))), 4),
+                "values": [{"x": round(float(x), 4), "pred": round(float(p), 4)} for x, p in zip(xs, preds)],
+            })
+        if not feats:
+            return None
+        return {
+            "outcome": "probability" if is_clf else "value",
+            "target": str(target or "outcome"),
+            "baseline": round(baseline, 4),
+            "features": feats,
+        }
     except Exception:  # noqa: BLE001
         return None
 

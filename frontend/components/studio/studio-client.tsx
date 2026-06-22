@@ -243,6 +243,7 @@ export function StudioClient() {
   const [model, setModel] = useState(PROVIDERS[0].models[0]);
   const [apiKey, setApiKey] = useState("");
   const [temperature, setTemperature] = useState("0.2");
+  const [maxTokens, setMaxTokens] = useState("2048");
   const [e2bKey, setE2bKey] = useState("");
   const [contextTags, setContextTags] = useState<string[]>([]);
   const [llmMode, setLlmMode] = useState<"single" | "perRole">("single");
@@ -283,6 +284,7 @@ export function StudioClient() {
       if (s.model) setModel(s.model);
       if (s.apiKey) setApiKey(s.apiKey);
       if (s.temperature) setTemperature(s.temperature);
+      if (s.maxTokens) setMaxTokens(s.maxTokens);
       if (s.e2bKey) setE2bKey(s.e2bKey);
       if (s.llmMode) setLlmMode(s.llmMode);
       if (s.roleLLM) setRoleLLM({ ...emptyRoleLLM(), ...s.roleLLM });
@@ -294,12 +296,12 @@ export function StudioClient() {
     try {
       localStorage.setItem(
         "helix_llm",
-        JSON.stringify({ provider, model, apiKey, temperature, e2bKey, llmMode, roleLLM }),
+        JSON.stringify({ provider, model, apiKey, temperature, maxTokens, e2bKey, llmMode, roleLLM }),
       );
     } catch {
       /* ignore */
     }
-  }, [provider, model, apiKey, temperature, e2bKey, llmMode, roleLLM]);
+  }, [provider, model, apiKey, temperature, maxTokens, e2bKey, llmMode, roleLLM]);
 
   // fetch the real backend prompts + per-agent logic so the pipeline can show them
   useEffect(() => {
@@ -429,12 +431,14 @@ export function StudioClient() {
     };
     const defTemp = parseFloat(temperature);
     const dt = Number.isFinite(defTemp) ? defTemp : 0.2;
+    const defMt = parseInt(maxTokens, 10);
+    const dmt = Number.isFinite(defMt) && defMt > 0 ? defMt : undefined;
     const buildLLMs = () => {
-      const def = { provider, model, api_key: apiKey, temperature: dt };
+      const def = { provider, model, api_key: apiKey, temperature: dt, max_tokens: dmt };
       if (llmMode === "single") return apiKey ? { default: def } : undefined;
       const out: Record<
         string,
-        { provider: string; model?: string; api_key: string; temperature?: number }
+        { provider: string; model?: string; api_key: string; temperature?: number; max_tokens?: number }
       > = {};
       if (apiKey) out.default = def;
       for (const role of LLM_ROLES) {
@@ -449,11 +453,12 @@ export function StudioClient() {
           model: c.model || model || undefined,
           api_key: c.apiKey || apiKey,
           temperature: Number.isFinite(rt) ? rt : dt,
+          max_tokens: dmt,
         };
       }
       return Object.keys(out).length ? out : undefined;
     };
-    const llm = { provider, model, apiKey, temperature: dt, llms: buildLLMs() };
+    const llm = { provider, model, apiKey, temperature: dt, maxTokens: dmt, llms: buildLLMs() };
     const job =
       datasetId === "custom" && (customFile || dataUrl.trim())
         ? streamAnalyze(
@@ -582,6 +587,7 @@ export function StudioClient() {
             model={model}
             apiKey={apiKey}
             temperature={temperature}
+            maxTokens={maxTokens}
             e2bKey={e2bKey}
             contextTags={contextTags}
             llmMode={llmMode}
@@ -594,6 +600,7 @@ export function StudioClient() {
             setModel={setModel}
             setApiKey={setApiKey}
             setTemperature={setTemperature}
+            setMaxTokens={setMaxTokens}
             setE2bKey={setE2bKey}
             setContextTags={setContextTags}
             setLlmMode={setLlmMode}
@@ -786,6 +793,7 @@ function Setup({
   model,
   apiKey,
   temperature,
+  maxTokens,
   e2bKey,
   contextTags,
   llmMode,
@@ -798,6 +806,7 @@ function Setup({
   setModel,
   setApiKey,
   setTemperature,
+  setMaxTokens,
   setE2bKey,
   setContextTags,
   setLlmMode,
@@ -823,6 +832,7 @@ function Setup({
   model: string;
   apiKey: string;
   temperature: string;
+  maxTokens: string;
   e2bKey: string;
   contextTags: string[];
   llmMode: "single" | "perRole";
@@ -835,6 +845,7 @@ function Setup({
   setModel: (v: string) => void;
   setApiKey: (v: string) => void;
   setTemperature: (v: string) => void;
+  setMaxTokens: (v: string) => void;
   setE2bKey: (v: string) => void;
   setContextTags: (v: string[]) => void;
   setLlmMode: (v: "single" | "perRole") => void;
@@ -1288,6 +1299,38 @@ function Setup({
             <span>0 · precise &amp; deterministic</span>
             <span>1 · creative &amp; varied</span>
           </div>
+        </div>
+
+        {/* max response tokens · output length budget per agent */}
+        <div className="mt-3 rounded-xl border border-white/10 bg-white/[0.02] p-4">
+          <div className="flex items-center justify-between">
+            <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-mute">
+              Max response tokens
+            </span>
+            <span className="rounded-md bg-brand/15 px-2 py-0.5 font-mono text-xs text-brand">
+              {parseInt(maxTokens, 10) || 2048}
+            </span>
+          </div>
+          <input
+            type="range"
+            min={512}
+            max={8192}
+            step={256}
+            value={parseInt(maxTokens, 10) || 2048}
+            onChange={(e) => setMaxTokens(e.target.value)}
+            className="mt-3 w-full"
+            style={{ accentColor: "#25d7f0" }}
+          />
+          <div className="mt-1 flex justify-between font-mono text-[9px] text-mute">
+            <span>512 · short</span>
+            <span>8192 · long</span>
+          </div>
+          <p className="mt-2 font-mono text-[10px] leading-relaxed text-mute">
+            Caps how long each agent&rsquo;s answer can be.{" "}
+            <span className="text-mist">Ideal: 2048&ndash;4096</span> for full reports &amp; long code;{" "}
+            <span className="text-mist">1024&ndash;1500</span> is plenty for plans, the critic and Q&amp;A.
+            Higher = more complete but slower &amp; costlier; too low can cut a report off mid-sentence.
+          </p>
         </div>
 
         <p className="mt-2 font-mono text-[10px] leading-relaxed text-mute">
@@ -1881,14 +1924,23 @@ function WhatIfSimulator({
   whatif,
   accent,
 }: {
-  whatif: { feature: string; outcome: string; values: { x: number; pred: number }[] }[];
+  whatif: {
+    outcome: string;
+    target: string;
+    baseline: number;
+    features: { feature: string; median: number; values: { x: number; pred: number }[] }[];
+  };
   accent: string;
 }) {
+  const { features, baseline, target, outcome } = whatif;
+  const isProb = outcome === "probability";
+  const tgt = target || "outcome";
   const [vals, setVals] = useState<Record<string, number>>(() =>
-    Object.fromEntries(whatif.map((w) => [w.feature, w.values[Math.floor(w.values.length / 2)].x])),
+    Object.fromEntries(
+      features.map((f) => [f.feature, f.median ?? f.values[Math.floor(f.values.length / 2)].x]),
+    ),
   );
-  const interp = (w: { values: { x: number; pred: number }[] }, x: number): number => {
-    const v = w.values;
+  const interp = (v: { x: number; pred: number }[], x: number): number => {
     if (x <= v[0].x) return v[0].pred;
     if (x >= v[v.length - 1].x) return v[v.length - 1].pred;
     for (let i = 0; i < v.length - 1; i++) {
@@ -1899,49 +1951,124 @@ function WhatIfSimulator({
     }
     return v[v.length - 1].pred;
   };
+  // Additive surrogate: every slider feeds ONE prediction.
+  //   combined = baseline + Σ ( effect_i(slider_i) − baseline )
+  // so moving any one slider updates the shared prediction below.
+  const contrib = (f: (typeof features)[number]) => interp(f.values, vals[f.feature]) - baseline;
+  const rawCombined = baseline + features.reduce((s, f) => s + contrib(f), 0);
+  const combined = isProb ? Math.max(0, Math.min(1, rawCombined)) : rawCombined;
+  const delta = combined - baseline;
+  const fmt = (v: number) => (isProb ? `${(v * 100).toFixed(1)}%` : v.toFixed(2));
+  const fmtDelta = (v: number) =>
+    isProb ? `${v >= 0 ? "+" : ""}${(v * 100).toFixed(1)} pts` : `${v >= 0 ? "+" : ""}${v.toFixed(2)}`;
+  const reset = () =>
+    setVals(Object.fromEntries(features.map((f) => [f.feature, f.median ?? f.values[Math.floor(f.values.length / 2)].x])));
+  const up = delta >= 0;
+
   return (
-    <div className="grid gap-4 md:grid-cols-2">
-      {whatif.map((w) => {
-        const xs = w.values.map((p) => p.x);
-        const lo = xs[0], hi = xs[xs.length - 1];
-        const cur = vals[w.feature];
-        const pred = interp(w, cur);
-        const isProb = w.outcome === "probability";
-        const preds = w.values.map((p) => p.pred);
-        const plo = Math.min(...preds), phi = Math.max(...preds);
-        const W = 220, H = 44;
-        const sx = (x: number) => ((x - lo) / (hi - lo || 1)) * W;
-        const sy = (p: number) => H - ((p - plo) / (phi - plo || 1)) * (H - 8) - 4;
-        const line = w.values.map((p) => `${sx(p.x).toFixed(1)},${sy(p.pred).toFixed(1)}`).join(" ");
-        return (
-          <div key={w.feature} className="rounded-xl border border-white/10 bg-white/[0.02] p-4">
-            <div className="flex items-center justify-between">
-              <span className="truncate text-[13px] text-mist" title={w.feature}>{w.feature}</span>
-              <span className="font-mono text-[11px] text-mute">{cur.toFixed(2)}</span>
+    <div>
+      {/* what this is */}
+      <p className="text-[13px] leading-relaxed text-mute">
+        Drag a slider to set a feature&rsquo;s value and watch the model&rsquo;s predicted{" "}
+        <span className="text-mist">{tgt}</span> respond. The big number combines{" "}
+        <span className="text-mist">all</span> sliders at once (an additive what-if estimate &mdash; each
+        feature&rsquo;s effect adds onto the baseline). Each mini-chart shows how that{" "}
+        <span className="text-mist">one</span> feature pushes the prediction up or down, with the others
+        held at typical (median) values.
+      </p>
+
+      {/* shared prediction — updates when ANY slider moves */}
+      <div className="mt-4 rounded-2xl border border-white/10 bg-white/[0.03] p-5">
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-mute">
+              Predicted {isProb ? `${tgt} probability` : tgt} · all features combined
             </div>
-            <svg viewBox={`0 0 ${W} ${H}`} className="mt-2 w-full">
-              <polyline points={line} fill="none" stroke={alpha(accent, 0.6)} strokeWidth="2" />
-              <circle cx={sx(cur)} cy={sy(pred)} r="3.5" fill={accent} />
-            </svg>
-            <input
-              type="range"
-              min={lo}
-              max={hi}
-              step={(hi - lo) / 100 || 0.01}
-              value={cur}
-              onChange={(e) => setVals((s) => ({ ...s, [w.feature]: parseFloat(e.target.value) }))}
-              className="mt-1 w-full"
-              style={{ accentColor: accent }}
-            />
-            <div className="mt-1.5 flex items-center justify-between">
-              <span className="font-mono text-[10px] uppercase tracking-wider text-mute">predicted</span>
-              <span className="font-display text-base font-semibold text-white">
-                {isProb ? `${(pred * 100).toFixed(1)}%` : pred.toFixed(2)}
+            <div className="mt-1 flex items-baseline gap-3">
+              <span className="font-display text-4xl font-semibold text-white">{fmt(combined)}</span>
+              <span
+                className="font-mono text-sm font-semibold"
+                style={{ color: up ? "#9ae64a" : "#fb7185" }}
+              >
+                {fmtDelta(delta)} {up ? "▲" : "▼"} vs baseline
               </span>
             </div>
+            <div className="mt-1 font-mono text-[10px] text-mute">
+              baseline (all features at median) = {fmt(baseline)}
+            </div>
           </div>
-        );
-      })}
+          <button
+            type="button"
+            onClick={reset}
+            className="rounded-lg border border-white/10 px-3 py-1.5 font-mono text-[11px] text-mute transition-colors hover:border-white/25 hover:text-mist"
+          >
+            ↺ reset to typical
+          </button>
+        </div>
+        {isProb && (
+          <div className="mt-3 h-2 w-full overflow-hidden rounded-full bg-white/10">
+            <div
+              className="h-full rounded-full transition-all"
+              style={{ width: `${combined * 100}%`, background: accent }}
+            />
+          </div>
+        )}
+      </div>
+
+      {/* per-feature sliders */}
+      <div className="mt-4 grid gap-4 md:grid-cols-2">
+        {features.map((f) => {
+          const xs = f.values.map((p) => p.x);
+          const lo = xs[0], hi = xs[xs.length - 1];
+          const cur = vals[f.feature];
+          const c = contrib(f);
+          const preds = f.values.map((p) => p.pred);
+          const plo = Math.min(...preds), phi = Math.max(...preds);
+          const W = 220, H = 44;
+          const sx = (x: number) => ((x - lo) / (hi - lo || 1)) * W;
+          const sy = (p: number) => H - ((p - plo) / (phi - plo || 1)) * (H - 8) - 4;
+          const line = f.values.map((p) => `${sx(p.x).toFixed(1)},${sy(p.pred).toFixed(1)}`).join(" ");
+          const cUp = c >= 0;
+          return (
+            <div key={f.feature} className="rounded-xl border border-white/10 bg-white/[0.02] p-4">
+              <div className="flex items-center justify-between gap-2">
+                <span className="truncate text-[13px] text-mist" title={f.feature}>{f.feature}</span>
+                <span className="shrink-0 font-mono text-[11px] text-mute">
+                  {cur.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                </span>
+              </div>
+              <svg viewBox={`0 0 ${W} ${H}`} className="mt-2 w-full">
+                {/* baseline reference (where this feature = median) */}
+                <line x1={sx(f.median)} y1={2} x2={sx(f.median)} y2={H - 2}
+                  stroke="rgba(255,255,255,0.18)" strokeDasharray="3 3" />
+                <polyline points={line} fill="none" stroke={alpha(accent, 0.6)} strokeWidth="2" />
+                <circle cx={sx(cur)} cy={sy(interp(f.values, cur))} r="3.5" fill={accent} />
+              </svg>
+              <input
+                type="range"
+                min={lo}
+                max={hi}
+                step={(hi - lo) / 100 || 0.01}
+                value={cur}
+                onChange={(e) => setVals((s) => ({ ...s, [f.feature]: parseFloat(e.target.value) }))}
+                className="mt-1 w-full"
+                style={{ accentColor: accent }}
+              />
+              <div className="mt-1.5 flex items-center justify-between">
+                <span className="font-mono text-[10px] uppercase tracking-wider text-mute">
+                  this feature&rsquo;s effect
+                </span>
+                <span
+                  className="font-mono text-[13px] font-semibold"
+                  style={{ color: Math.abs(c) < 1e-9 ? "#76859f" : cUp ? "#9ae64a" : "#fb7185" }}
+                >
+                  {fmtDelta(c)}
+                </span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -2417,17 +2544,15 @@ function Results({
       )}
 
       {/* what-if simulator */}
-      {r._whatif && r._whatif.length > 0 && (
+      {r._whatif && r._whatif.features && r._whatif.features.length > 0 && (
         <div className="rounded-2xl border border-white/10 bg-panel p-6">
-          <div className="mb-1 flex flex-wrap items-center gap-2">
+          <div className="mb-3 flex flex-wrap items-center gap-2">
             <Sparkles className="h-4 w-4 text-brand" />
             <h3 className="font-mono text-xs uppercase tracking-[0.16em] text-mute">
               What-if simulator
             </h3>
+            <span className="font-mono text-[10px] text-mute">· interactive · all sliders feed one prediction</span>
           </div>
-          <p className="mb-4 font-mono text-[10px] leading-relaxed text-mute">
-            Move a slider to see how the predicted {tgt} changes when that feature changes (others held at their median).
-          </p>
           <WhatIfSimulator whatif={r._whatif} accent={ds.accent} />
         </div>
       )}

@@ -104,9 +104,10 @@ async def run_real(
 
     # ── Executor + Critic: run in the sandbox, self-correct real failures ─
     await emit("executor", status="active")
+    has_e2b = bool(e2b_key or os.getenv("E2B_API_KEY"))
     sandbox_label = (
-        "E2B microVM  (isolated VM | hard timeout)"
-        if (e2b_key or os.getenv("E2B_API_KEY"))
+        "E2B microVM requested  (remote VM isolation | hard timeout)"
+        if has_e2b
         else "RestrictedPython sandbox  (fs: off | net: off)"
     )
     await emit("executor", log={"text": "> " + sandbox_label, "kind": "muted"})
@@ -116,9 +117,17 @@ async def run_real(
     current = gen
     ran_ok = False
     fixes = 0
+    e2b_note_shown = False
     for attempt in range(5):
         await emit("executor", log={"text": f">>> executing code (attempt {attempt + 1})", "kind": "muted"})
         res = await loop.run_in_executor(None, lambda c=current: execute_code(c, df, e2b_key))
+        # surface (once) why E2B fell back, so a misconfigured key isn't silent
+        if has_e2b and getattr(res, "note", "") and not e2b_note_shown:
+            await emit("executor", log={"text": "! " + res.note, "kind": "warn"})
+            e2b_note_shown = True
+        elif has_e2b and res.engine == "e2b" and not e2b_note_shown:
+            await emit("executor", log={"text": "+ E2B microVM connected — running in a remote isolated VM", "kind": "ok"})
+            e2b_note_shown = True
         if res.ok:
             await emit("executor", log={"text": "--- stdout ---", "kind": "muted"})
             for line in (res.stdout or "").rstrip().splitlines() or ["(no output)"]:
