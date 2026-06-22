@@ -38,6 +38,7 @@ import {
   Send,
   Link2,
   Scale,
+  AlertTriangle,
 } from "lucide-react";
 import { AGENTS, type AgentId, type Agent } from "@/lib/agents";
 import {
@@ -236,6 +237,8 @@ export function StudioClient() {
   const [logs, setLogs] = useState<LogLine[]>([]);
   const [tab, setTab] = useState<"pipeline" | "activity" | "results">("pipeline");
   const [liveResults, setLiveResults] = useState<RunResults | null>(null);
+  const [liveFailed, setLiveFailed] = useState(false);
+  const gotResult = useRef(false);
   const [runMode, setRunMode] = useState<"sim" | "live">(
     isLive() ? "live" : "sim",
   );
@@ -406,6 +409,8 @@ export function StudioClient() {
     setStatuses(initialStatuses());
     setLogs([]);
     setLiveResults(null);
+    setLiveFailed(false);
+    gotResult.current = false;
     setTab("pipeline");
     setPhase("running");
 
@@ -423,10 +428,16 @@ export function StudioClient() {
         if (e.status) setStatuses((s) => ({ ...s, [e.stage]: e.status! }));
         if (e.log) appendLog(e.stage, e.log.text, e.log.kind ?? "info");
       },
-      onResult: (r) => setLiveResults(r),
+      onResult: (r) => {
+        gotResult.current = true;
+        setLiveResults(r);
+      },
       onDone: () => {
         setPhase("done");
         setTab("results");
+        // live run ended without ever delivering a result → it failed; show a
+        // clear failure panel instead of silently falling back to sample data
+        if (!gotResult.current) setLiveFailed(true);
       },
     };
     const defTemp = parseFloat(temperature);
@@ -486,6 +497,8 @@ export function StudioClient() {
     setStatuses(initialStatuses());
     setLogs([]);
     setLiveResults(null);
+    setLiveFailed(false);
+    gotResult.current = false;
   };
 
   const downloadReport = () => {
@@ -693,7 +706,7 @@ export function StudioClient() {
                     <PipelineFlow
                       statuses={statuses}
                       logsByStage={logsByStage}
-                      results={phase === "done" ? liveResults ?? ds.results : liveResults}
+                      results={phase === "done" ? (liveResults ?? (runMode === "live" ? null : ds.results)) : liveResults}
                       ctx={pipeCtx}
                       phase={phase}
                       agentInfo={agentInfo}
@@ -752,18 +765,26 @@ export function StudioClient() {
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0 }}
                   >
-                    <Results
-                      ds={ds}
-                      results={liveResults ?? ds.results}
-                      onDownload={downloadReport}
-                      goal={goal}
-                      live={runMode === "live"}
-                      llmConfig={{ provider, model, apiKey, temperature: parseFloat(temperature) || 0.2 }}
-                      coderCode={(logsByStage["coder"] || [])
-                        .filter((l) => l.kind === "code")
-                        .map((l) => l.text)
-                        .join("\n")}
-                    />
+                    {runMode === "live" && liveFailed && !liveResults ? (
+                      <RunFailedPanel
+                        error={[...logs].reverse().find((l) => l.kind === "err")?.text}
+                        onViewLog={() => setTab("activity")}
+                        onRetry={run}
+                      />
+                    ) : (
+                      <Results
+                        ds={ds}
+                        results={liveResults ?? ds.results}
+                        onDownload={downloadReport}
+                        goal={goal}
+                        live={runMode === "live"}
+                        llmConfig={{ provider, model, apiKey, temperature: parseFloat(temperature) || 0.2 }}
+                        coderCode={(logsByStage["coder"] || [])
+                          .filter((l) => l.kind === "code")
+                          .map((l) => l.text)
+                          .join("\n")}
+                      />
+                    )}
                   </motion.div>
                 )}
               </AnimatePresence>
@@ -777,6 +798,52 @@ export function StudioClient() {
 
 function agentAccent(id: AgentId): string {
   return AGENTS.find((a) => a.id === id)?.accent ?? "#76859f";
+}
+
+/** Shown when a LIVE run ends without producing results — so we never silently
+ *  fall back to a sample/previous dataset's results, which is misleading. */
+function RunFailedPanel({
+  error,
+  onViewLog,
+  onRetry,
+}: {
+  error?: string;
+  onViewLog: () => void;
+  onRetry: () => void;
+}) {
+  return (
+    <div className="rounded-2xl border border-coral/30 bg-coral/[0.04] p-8 text-center">
+      <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-coral/15">
+        <AlertTriangle className="h-6 w-6 text-coral" />
+      </div>
+      <h3 className="font-display text-lg font-semibold text-white">This run didn&rsquo;t finish</h3>
+      <p className="mx-auto mt-2 max-w-md text-[13px] leading-relaxed text-mute">
+        The analysis stopped before producing a result, so there&rsquo;s nothing to show.
+        (We don&rsquo;t display an earlier or sample result here — that would be misleading.)
+      </p>
+      {error && (
+        <div className="mx-auto mt-4 max-w-xl overflow-x-auto rounded-lg border border-white/10 bg-[#06080f] px-3 py-2 text-left font-mono text-[11.5px] leading-relaxed text-coral/90">
+          {error}
+        </div>
+      )}
+      <div className="mt-5 flex flex-wrap items-center justify-center gap-3">
+        <button
+          type="button"
+          onClick={onRetry}
+          className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-4 py-2 text-sm font-semibold text-ink transition-opacity hover:opacity-90"
+        >
+          <RotateCcw className="h-4 w-4" /> Try again
+        </button>
+        <button
+          type="button"
+          onClick={onViewLog}
+          className="inline-flex items-center gap-1.5 rounded-lg border border-white/15 px-4 py-2 text-sm text-mist transition-colors hover:border-white/30"
+        >
+          <Activity className="h-4 w-4" /> View activity log
+        </button>
+      </div>
+    </div>
+  );
 }
 
 /* ------------------------------- Setup ------------------------------- */

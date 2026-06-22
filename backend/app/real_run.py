@@ -24,6 +24,20 @@ from .web_search import web_research
 Emit = Callable[..., Awaitable[None]]
 
 
+async def _complete(role: str, context: dict, *, fallback: str = "",
+                    emit: Emit | None = None, stage: str | None = None) -> str:
+    """Call an agent's LLM but never let a transient provider error (timeout,
+    rate-limit, 5xx, network, malformed response) kill the run — fall back to the
+    deterministic text so the pipeline always finishes and returns results."""
+    try:
+        return await get_llm(role).acomplete(role, context)
+    except Exception as exc:  # noqa: BLE001 — narration is best-effort
+        if emit and stage:
+            await emit(stage, log={"text": f"LLM call failed ({type(exc).__name__}) — using the built-in {role} text",
+                                   "kind": "warn"})
+        return fallback
+
+
 async def run_real(
     df: pd.DataFrame,
     target: str,
@@ -66,7 +80,8 @@ async def run_real(
         "5. evaluate on held-out data",
         "6. explain drivers with SHAP",
     ]
-    text = await get_llm("planner").acomplete("planner", {"goal": goal, "dataset": ds_info, "plan": curated_plan})
+    text = await _complete("planner", {"goal": goal, "dataset": ds_info, "plan": curated_plan},
+                           fallback="\n".join(curated_plan), emit=emit, stage="planner")
     plan = [ln.strip() for ln in text.splitlines() if ln.strip()] or curated_plan
     await emit("planner", log={"text": "analysis plan:", "kind": "muted"})
     for line in plan:
@@ -94,9 +109,10 @@ async def run_real(
         "print(df.mean(numeric_only=False).round(2).to_string())"
     )
     curated_fix = curated_code.replace("numeric_only=False", "numeric_only=True")
-    gen = await get_llm("coder").acomplete(
+    gen = await _complete(
         "coder",
         {"dataset": ds_info, "step": "profile the dataset", "code": [curated_code], "docs": docs},
+        fallback=curated_code, emit=emit, stage="coder",
     )
     gen = strip_code_fences(gen) or curated_code
     code_lines = gen.splitlines()
@@ -149,10 +165,11 @@ async def run_real(
         await emit("critic", status="active")
         await emit("critic", log={"text": "reading traceback + diagnosing the failure...", "kind": "muted"})
         await _p(0.4)
-        fixed = await get_llm("critic").acomplete(
-            "critic", {"error": res.error, "code": current, "fix": curated_fix, "dataset": ds_info}
+        fixed = await _complete(
+            "critic", {"error": res.error, "code": current, "fix": curated_fix, "dataset": ds_info},
+            fallback=curated_fix, emit=emit, stage="critic",
         )
-        fixed = strip_code_fences(fixed.strip()) or curated_fix
+        fixed = strip_code_fences((fixed or "").strip()) or curated_fix
         fixes += 1
         # concise diagnosis = the exception line of the traceback (the full
         # traceback was already streamed above); keep this line readable.
@@ -308,7 +325,10 @@ async def run_real(
     await emit("researcher", log={"text": "search queries:", "kind": "muted"})
     for q in queries:
         await emit("researcher", log={"text": "  ? " + q, "kind": "code"})
-    hits = await loop.run_in_executor(None, lambda: web_research(queries, 5))
+    try:
+        hits = await loop.run_in_executor(None, lambda: web_research(queries, 5))
+    except Exception:  # noqa: BLE001 — live web research is best-effort
+        hits = []
     if hits:
         await emit("researcher", log={"text": f"--- {len(hits)} live sources ---", "kind": "muted"})
         for h in hits:
@@ -317,9 +337,11 @@ async def run_real(
                 await emit("researcher", log={"text": "    " + h["url"], "kind": "muted"})
     else:
         await emit("researcher", log={"text": "no live results — using domain knowledge", "kind": "warn"})
-    research_text = await get_llm("researcher").acomplete(
+    research_text = await _complete(
         "researcher",
         {"goal": goal, "context": context, "drivers": ", ".join(drivers_list), "hits": hits, "dataset": ds_info},
+        fallback="External web research was unavailable for this run; the analysis above stands on its own.",
+        emit=emit, stage="researcher",
     )
     await emit("researcher", log={"text": "--- synthesis ---", "kind": "muted"})
     for line in (research_text or "").splitlines() or [research_text or ""]:
@@ -368,22 +390,29 @@ async def run_real(
             return None, None
         return (paras[:-1] or paras), paras[-1].replace("Recommendation:", "").strip()
 
-    # WITH live web research
-    rtext = await llm.acomplete(
-        "reporter", {"report": orig_report, "recommendation": orig_rec, **common, "research": research_text}
-    )
-    if not llm.is_mock and rtext:
-        rep, rec = _parse(rtext)
-        if rep:
-            results["report"], results["recommendation"] = rep, rec
-        # WITHOUT web research — the baseline, for the comparison toggle
-        btext = await llm.acomplete(
-            "reporter", {"report": orig_report, "recommendation": orig_rec, **common, "research": ""}
+    # WITH live web research — guarded so a transient LLM error keeps the built-in
+    # report (already in results["report"]/[...recommendation]) and STILL returns a
+    # full result. The narrative is a bonus on top of real ML, never a hard gate.
+    try:
+        rtext = await llm.acomplete(
+            "reporter", {"report": orig_report, "recommendation": orig_rec, **common, "research": research_text}
         )
-        brep, brec = _parse(btext)
-        if brep:
-            results["_report_base"], results["_recommendation_base"] = brep, brec
-    await emit("reporter", log={"text": "OK report generated", "kind": "ok"})
+        if not llm.is_mock and rtext:
+            rep, rec = _parse(rtext)
+            if rep:
+                results["report"], results["recommendation"] = rep, rec
+            # WITHOUT web research — the baseline, for the comparison toggle
+            btext = await llm.acomplete(
+                "reporter", {"report": orig_report, "recommendation": orig_rec, **common, "research": ""}
+            )
+            brep, brec = _parse(btext)
+            if brep:
+                results["_report_base"], results["_recommendation_base"] = brep, brec
+        await emit("reporter", log={"text": "OK report generated", "kind": "ok"})
+    except Exception as exc:  # noqa: BLE001 — keep the built-in report, never lose the result
+        await emit("reporter", log={"text": f"LLM call failed ({type(exc).__name__}) — using the built-in report",
+                                    "kind": "warn"})
+        await emit("reporter", log={"text": "OK report ready (built-in narrative)", "kind": "ok"})
     await emit("reporter", status="done")
 
     return results
