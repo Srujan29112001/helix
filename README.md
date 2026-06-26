@@ -40,9 +40,11 @@ short business report with a recommendation.
 
 > **Domain-agnostic.** Helix works on **any tabular CSV from any industry** —
 > finance, healthcare, retail, marketing, HR, science, and more. It auto-detects
-> the task (**classification, regression, clustering, or NLP/text**), cleans messy
-> data, parses dates, and adapts — verified on churn, sales, segmentation, reviews,
-> insurance, Titanic, penguins and loan default.
+> the task across **nine task families** (classification · regression · clustering ·
+> NLP · anomaly detection · dimensionality reduction · time-series forecasting ·
+> survival analysis · recommendation), cleans messy data, parses dates, and adapts
+> — verified on churn, sales, segmentation, reviews, insurance, Titanic, penguins,
+> loan default, and 30+ public datasets.
 
 ### A concrete example (customer churn — one of many)
 1. You upload `telco_churn.csv` and type *"predict churn and the key drivers."*
@@ -121,28 +123,51 @@ stage — instead of staring at a spinner.
 ## 4. Highlights
 
 - **Self-correcting code execution** — the Executor↔Critic loop reads real
-  tracebacks and rewrites the code until it runs (up to 5 tries).
+  tracebacks and rewrites the code until it runs (up to 5 tries), with a
+  guaranteed-recovery safety net so the Executor always ends on clean output.
+- **Nine task families, auto-detected** — classification (binary + multiclass),
+  regression, clustering, NLP (topics · sentiment · keywords), anomaly detection,
+  dimensionality reduction (PCA), time-series forecasting (Holt-Winters ETS +
+  seasonality), survival analysis (Kaplan-Meier + Cox PH) and recommendation.
+- **Statistics + model-evaluation diagnostics** — auto-picks the right hypothesis
+  test (Welch t / Mann-Whitney, ANOVA / Kruskal, chi-square, Pearson) with p-values
+  and effect sizes; plus stratified k-fold CV, confusion matrix, per-class P/R/F1,
+  ROC & PR curves, calibration, learning curves, residuals and a model-comparison
+  table vs baselines.
+- **An analyst's toolkit** — SMOTE class-balancing, automatic feature engineering
+  (log-transform skew + top interaction), an interactive **what-if simulator** (move
+  sliders, watch one combined prediction respond), grounded **natural-language Q&A**
+  over your results, and one-click **exports** (.pptx deck, Markdown report, .py script).
 - **Big-data ready** — handles files up to ~3M rows: a striped read-sample,
   width-scaled training (up to ~500k rows), a 150-feature cap, 32-bit downcast,
   and a streaming heartbeat so long fits never time out.
 - **Honest model-quality verdict** — grades every result from *Strong
   predictive signal* to *Near-chance — weak signal*, so a weak dataset explains
   itself instead of looking broken.
-- **Recommended-charts gallery** — the Visualizer chooses chart types (bar,
-  column, pie, line, area, radar, histogram, scatter, box, heatmap, statcards);
-  the engine fills every number from the real data, so **a chart can never show
-  a fabricated value**. Each card ships with a data table + a "how to read this" note.
+- **Interactive charts** — bar, column, pie, line, area, radar, histogram, scatter,
+  box, heatmap, statcards + diagnostics (ROC/PR/calibration, confusion, KM,
+  forecast, learning curve). Every number is filled from the real data — **a chart
+  can never show a fabricated value** — and you can **hover any point/line/dot** for
+  the exact value, with real numeric tick values on both axes. Each card ships with
+  a data table + a "how to read this" note.
 - **3D Knowledge Graph** — the whole analysis as an explorable force-directed
   map (target, drivers, segments, metrics, charts, quality, columns) with
   hover, click-for-detail, and search.
 - **Live web research** — the Researcher grounds the report in real sources,
   with an On/Off toggle to compare the report *with vs without* it.
+- **Resilient by design** — every agent's LLM call falls back to deterministic
+  text on a transient provider error, and the run **always returns a result** (the
+  narrative is a bonus on top of real ML, never a hard gate). A seven-level graceful
+  degradation chain means the app never just breaks.
+- **Many input formats** — CSV, Excel (.xlsx/.xls), Parquet, JSON, a public CSV
+  **URL**, or a **Google Sheets** link.
 - **Full transparency** — the Studio shows the **exact system prompt + logic**
   for every agent, the **RestrictedPython / E2B sandbox** rules, and the complete
   code + stdout + tracebacks streamed live (Colab-style).
 - **Pluggable LLMs + controls** — one model for all agents *or* a different
-  model per agent, a **temperature** slider (global or per-agent), and an
-  optional **E2B microVM** key. Keys live only in your browser.
+  model per agent, a **temperature** slider, a **max-tokens** control (with ideal-
+  range guidance), all global or per-agent, and an optional **E2B microVM** key
+  (true VM isolation). Keys live only in your browser.
 
 ### Providers & models
 Bring your own key for any of: **Groq** (free, fast), **OpenAI**, **DeepSeek**,
@@ -173,8 +198,12 @@ narration while still doing **real ML** (FLAML + SHAP).
 | **FLAML** | Lightweight **AutoML** — finds a good model under a time budget. |
 | **SHAP** | The standard for **explainability** — "here's why," with direction. |
 | **ChromaDB + MiniLM** | **RAG**: ground the Coder in real recipes; fewer hallucinated APIs. |
+| **statsmodels / lifelines** | Time-series forecasting (Holt-Winters ETS) + survival analysis (Kaplan-Meier / Cox PH). |
+| **imbalanced-learn** | SMOTE class-balancing for skewed targets (train-only, so metrics stay honest). |
+| **scipy.stats** | Hypothesis tests + effect sizes behind the statistical-significance section. |
 | **RestrictedPython + E2B** | Sandbox the agent's code — in-process jail by default, hardened microVM with a key. |
 | **ddgs / Tavily** | Live web research for the Researcher. |
+| **python-pptx / markdown** | Export results as a .pptx deck or a Markdown report. |
 
 ---
 
@@ -196,16 +225,18 @@ Capstone Project IIITH/
 │       ├── studio-run.ts    sample datasets + the RunResults contract
 │       └── api.ts           streaming client (SSE)
 └── backend/             ← FastAPI service (the agent brain)
-    └── app/
-        ├── main.py          API routes + SSE streaming + big-data ingest + /api/prompts
-        ├── real_run.py      the 9-agent run on an uploaded CSV
-        ├── pipeline.py      the LangGraph graph (sample datasets)
-        ├── analysis.py      the ML engine: clean → FLAML → SHAP → EDA → charts → verdict
-        ├── llm.py           pluggable LLM layer (mock + real, per-role, temperature)
-        ├── sandbox.py       RestrictedPython + E2B microVM executor
-        ├── rag.py           ChromaDB + MiniLM retrieval (Coder grounding)
-        ├── web_search.py    live web research (DuckDuckGo / Tavily)
-        └── schemas.py       request models
+    ├── app/
+    │   ├── main.py          API routes (/api/analyze, /api/ask, /api/export, /api/prompts) + SSE + big-data ingest
+    │   ├── real_run.py      the 9-agent run on an uploaded CSV (resilient LLM calls)
+    │   ├── pipeline.py      the LangGraph graph (sample datasets)
+    │   ├── analysis.py      the ML engine: clean → FLAML → SHAP → stats → model-eval → charts → verdict
+    │   ├── llm.py           pluggable LLM layer (mock + real, per-role, temperature + max-tokens)
+    │   ├── sandbox.py       RestrictedPython + E2B microVM executor
+    │   ├── rag.py           ChromaDB + MiniLM retrieval (Coder grounding, 70-recipe corpus)
+    │   ├── export.py        .pptx deck / Markdown report builders
+    │   ├── web_search.py    live web research (DuckDuckGo / Tavily)
+    │   └── schemas.py       request models
+    └── tests/               pytest suite (every task type + engine helpers + exports)
 ```
 
 ---
@@ -241,5 +272,7 @@ UI always works. `docker compose up --build` runs both halves at once.
 | **Backend** (FastAPI + ML) | **Hugging Face Spaces** (Docker) | Free 16 GB RAM — enough for FLAML + SHAP. Sleeps when idle (first request ~30–60s to wake). |
 
 See `DEPLOY.md` for full instructions. **Status: complete and deployed** — the
-entire product experience, the 9-agent architecture, real ML (FLAML + SHAP),
-the sandbox, RAG, live research, and the full dashboard, running end-to-end.
+entire product experience, the 9-agent architecture, real ML (FLAML + SHAP) across
+nine task families, statistics + model-evaluation diagnostics, the analyst toolkit
+(SMOTE · feature engineering · what-if simulator · NL Q&A · exports), the dual
+sandbox, RAG, live research, and the full interactive dashboard, running end-to-end.

@@ -1,9 +1,9 @@
 # Helix deck — image guide
 
-Everything the **22-slide deck** (`Helix_Project_Deck.pptx`, built by
+Everything the **23-slide deck** (`Helix_Project_Deck.pptx`, built by
 `build_project_deck.py`) uses for imagery. **All 11 images are already embedded** —
 the deck is complete as-is. This file documents what each image is and how to
-replace any of them.
+replace any of them. (Slide 1 = title, slide 2 = the team, the rest follow.)
 
 Rebuild any time with:
 
@@ -22,10 +22,10 @@ Captured headless via Playwright at 2880×1620 (16:9) against the live app.
 
 | File | Slide | Screen |
 |------|-------|--------|
-| `05_landing.png` | 2 | Landing hero — "writes its own code — and fixes it" |
-| `06_studio.png` | 10 | Studio setup (samples, upload, goal, target, task, AI engine) |
-| `10_pipeline.png` | 11 | Pipeline mid-stream — Planner plan, Coder RAG docs, Critic "1 fix" |
-| `11_results_telco.png` | 12 | Results on **Telco Churn** — verdict 0.83, metrics, key findings |
+| `05_landing.png` | 3 | Landing hero — "writes its own code — and fixes it" |
+| `06_studio.png` | 11 | Studio setup (samples, upload, goal, target, task, AI engine) |
+| `10_pipeline.png` | 12 | Pipeline mid-stream — Planner plan, Coder RAG docs, Critic "1 fix" |
+| `11_results_telco.png` | 13 | Results on **Telco Churn** — verdict 0.83, metrics, key findings |
 
 **To re-capture** after a UI change: run the frontend (`npm run dev`, backend up,
 `.env.local → NEXT_PUBLIC_API_URL=http://localhost:8000`) and screenshot a 16:9

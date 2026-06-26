@@ -1,4 +1,4 @@
-"""Builds the Helix capstone *project deck* — 22 slides, dark brand-matched, for a
+"""Builds the Helix capstone *project deck* — 23 slides, dark brand-matched, for a
 mixed audience (non-tech -> learners -> data scientists -> professors -> business
 leaders).
 
@@ -52,7 +52,7 @@ MID, TOP = MSO_ANCHOR.MIDDLE, MSO_ANCHOR.TOP
 
 HERE = os.path.dirname(__file__)
 ASSETS = os.path.join(HERE, "assets")
-TOTAL = 22
+TOTAL = 23
 
 prs = Presentation()
 prs.slide_width = Inches(13.333)
@@ -145,9 +145,15 @@ def title(s, x, y, t, w=11.6, size=32, color=WHITE):
     one(s, x, y, w, 1.1, t, size, color, True, HEAD)
 
 
-def footer(s, n):
+_SLIDE_NO = [1]  # the title slide (slide 01) carries no page-number footer
+
+
+def footer(s):
+    """Auto-numbered footer (in slide-creation order) so inserting/reordering
+    slides never requires renumbering."""
+    _SLIDE_NO[0] += 1
     one(s, 1.0, 7.06, 8, 0.3, "HELIX · The Autonomous Data Scientist", 9, MUTE, False, MONO)
-    one(s, 10.3, 7.06, 2.03, 0.3, f"{n:02d} / {TOTAL}", 9, MUTE, False, MONO, align=RIGHT)
+    one(s, 10.3, 7.06, 2.03, 0.3, f"{_SLIDE_NO[0]:02d} / {TOTAL}", 9, MUTE, False, MONO, align=RIGHT)
 
 
 def _ratio(fname, default=1.6):
@@ -240,7 +246,32 @@ for t, c in chips:
     cx += w + 0.25
 one(s, 1.02, 6.85, 7.0, 0.4, "helix-henna.vercel.app    ·    github.com/Srujan29112001/helix", 11.5, MUTE, False, MONO)
 
-# ============================ 2 — Overview ============================
+# ============================ 2 — Team ============================
+s = slide(INK)
+eyebrow(s, 1.0, 0.85, "Capstone team", VIOLET)
+title(s, 1.0, 1.2, "The team behind Helix")
+one(s, 1.0, 2.02, 11.3, 0.4, "A six-member capstone group · IIIT-Hyderabad · 2026", 13.5, MUTE, False, BODY)
+# 6 members (kept in order) — initials avatar + name
+MEMBERS = [
+    ("Srujan K", "SK", CYAN), ("Satish B", "SB", VIOLET), ("Renuka Jataprolu", "RJ", ACID),
+    ("Saumya Ratan", "SR", GOLD), ("Priyanka Laha", "PL", MAGENTA), ("Santosh Vaddadi", "SV", AZURE),
+]
+for i, (name, ini, c) in enumerate(MEMBERS):
+    col, row = i % 3, i // 3
+    x = 1.0 + col * 3.85
+    y = 2.7 + row * 1.45
+    box(s, x, y, 3.55, 1.25, PANEL, EDGE)
+    dot(s, x + 0.32, y + 0.35, 0.55, c)
+    one(s, x + 0.32, y + 0.35, 0.55, 0.55, ini, 14, INK, True, HEAD, CENTER, MID)
+    one(s, x + 1.05, y + 0.3, 2.4, 0.65, name, 15, WHITE, True, HEAD, anchor=MID)
+# presenting to — set apart with a gold-bordered band
+box(s, 1.0, 5.72, 11.33, 1.1, INK2, GOLD, 1.25)
+one(s, 1.0, 5.9, 11.33, 0.3, "PRESENTING TO", 10.5, MUTE, True, MONO, CENTER)
+one(s, 1.0, 6.18, 11.33, 0.4, "Prof. Ponnurangam Kumaraguru (PK)", 19, WHITE, True, HEAD, CENTER)
+one(s, 1.0, 6.6, 11.33, 0.3, "Professor, Computer Science · IIIT-Hyderabad", 12, MIST, False, BODY, CENTER)
+footer(s)
+
+# ============================ 3 — Overview ============================
 s = slide(INK)
 eyebrow(s, 1.0, 0.8, "Overview")
 title(s, 1.0, 1.15, "What is Helix?")
@@ -265,7 +296,7 @@ for i, (v, l, c) in enumerate(stats):
     box(s, x, y, 2.16, 0.8, PANEL, EDGE)
     one(s, x + 0.18, y + 0.1, 2.0, 0.45, v, 20, c, True, HEAD)
     one(s, x + 0.18, y + 0.5, 2.0, 0.25, l, 9.5, MUTE, False, MONO)
-footer(s, 2)
+footer(s)
 
 # ============================ 3 — Problem ============================
 s = slide(INK)
@@ -285,7 +316,7 @@ for i, (h, b, c) in enumerate(probs):
     dot(s, 1.3, y + 0.4, 0.22, c)
     one(s, 1.72, y + 0.15, 6.1, 0.4, h, 15, WHITE, True, HEAD)
     one(s, 1.72, y + 0.55, 6.1, 0.4, b, 12, MUTE, False, BODY)
-footer(s, 3)
+footer(s)
 
 # ============================ 4 — Solution (before/after) ============================
 s = slide(INK)
@@ -310,7 +341,7 @@ for i, t in enumerate(after):
     one(s, 7.08, y, 0.4, 0.4, "✓", 13, ACID, True, BODY, anchor=MID)
     one(s, 7.48, y, 4.7, 0.5, t, 12.5, MIST, False, BODY, anchor=MID)
 one(s, 1.0, 6.45, 11.3, 0.4, "Helix replaces days of manual work with minutes of autonomous, explainable analysis.", 13, MUTE, False, BODY, CENTER)
-footer(s, 4)
+footer(s)
 
 # ============================ 5 — Architecture (diagram) ============================
 s = slide(INK)
@@ -318,7 +349,7 @@ eyebrow(s, 1.0, 0.72, "System architecture", VIOLET)
 title(s, 1.0, 1.06, "A three-tier, stateless pipeline")
 place_box(s, 1.0, 1.9, 11.33, 4.6, "diagram_architecture.png", "DIAGRAM", "Frontend · Backend API (9 agents + LangGraph) · AI/ML layer", VIOLET)
 one(s, 1.0, 6.65, 11.3, 0.4, "Stateless · no database · in-memory per request · agents stream live to the UI via Server-Sent Events.", 12.5, MUTE, False, BODY, CENTER)
-footer(s, 5)
+footer(s)
 
 # ============================ 6 — Nine-agent pipeline ============================
 s = slide(INK)
@@ -338,7 +369,7 @@ for i, ((name, c), job) in enumerate(zip(AGENTS9, jobs)):
     one(s, x + 0.78, y + 0.2, 2.6, 0.4, name, 14, WHITE, True, HEAD)
     one(s, x + 0.3, y + 0.66, 3.1, 0.5, job, 11, MUTE, False, BODY)
 one(s, 1.0, 6.75, 11.3, 0.4, "FLOW   Planner → Coder → Executor → Critic → AutoML → Explainer → Visualizer → Researcher → Reporter", 11.5, CYAN, True, MONO, CENTER)
-footer(s, 6)
+footer(s)
 
 # ============================ 7 — Deep dive part 1 ============================
 s = slide(INK2)
@@ -357,7 +388,7 @@ for i, (h, b, c) in enumerate(dd):
     box(s, x, y, 0.12, 1.8, c, None, radius=0.0)
     one(s, x + 0.4, y + 0.24, 5.0, 0.4, h, 16, c, True, HEAD)
     one(s, x + 0.4, y + 0.78, 4.95, 0.95, b, 12.5, MUTE, False, BODY)
-footer(s, 7)
+footer(s)
 
 # ============================ 8 — Deep dive part 2 ============================
 s = slide(INK2)
@@ -381,7 +412,7 @@ for i, (h, b, c) in enumerate(dd2):
     box(s, x, y, 0.12, 1.4 if i < 4 else 1.05, c, None, radius=0.0)
     one(s, x + 0.4, y + 0.16, w - 0.7, 0.4, h, 15, c, True, HEAD)
     one(s, x + 0.4, y + 0.6, w - 0.7, 0.7, b, 12, MUTE, False, BODY)
-footer(s, 8)
+footer(s)
 
 # ============================ 9 — Self-healing loop ============================
 s = slide(INK)
@@ -405,7 +436,7 @@ for i, (v, l, c) in enumerate(hl):
     box(s, x, 5.45, 3.55, 1.2, PANEL, EDGE)
     one(s, x, 5.56, 3.55, 0.6, v, 28, c, True, HEAD, CENTER)
     one(s, x, 6.25, 3.55, 0.35, l, 11, MUTE, False, MONO, CENTER)
-footer(s, 9)
+footer(s)
 
 # ============================ 10 — The Studio (screenshot) ============================
 s = slide(INK)
@@ -421,7 +452,7 @@ for i, (h, b) in enumerate(fr):
     box(s, 8.4, y, 3.93, 1.07, PANEL, EDGE)
     one(s, 8.62, y + 0.13, 3.6, 0.4, h, 13, CYAN, True, HEAD)
     one(s, 8.62, y + 0.5, 3.6, 0.5, b, 10, MUTE, False, BODY)
-footer(s, 10)
+footer(s)
 
 # ============================ 11 — Live pipeline (screenshot) ============================
 s = slide(INK)
@@ -437,7 +468,7 @@ for i, (h, b) in enumerate(pp):
     box(s, 8.4, y, 3.93, 1.07, PANEL, EDGE)
     one(s, 8.62, y + 0.12, 3.6, 0.4, h, 13, AZURE, True, HEAD)
     one(s, 8.62, y + 0.49, 3.6, 0.5, b, 10, MUTE, False, BODY)
-footer(s, 11)
+footer(s)
 
 # ============================ 12 — Results (screenshot) ============================
 s = slide(INK)
@@ -453,7 +484,7 @@ for i, (h, b) in enumerate(rr):
     box(s, 8.4, y, 3.93, 1.07, PANEL, EDGE)
     one(s, 8.62, y + 0.12, 3.6, 0.4, h, 13, MAGENTA, True, HEAD)
     one(s, 8.62, y + 0.49, 3.6, 0.5, b, 10, MUTE, False, BODY)
-footer(s, 12)
+footer(s)
 
 # ============================ 13 — Backend ============================
 s = slide(INK)
@@ -476,7 +507,7 @@ for i, (h, b, c) in enumerate(groups):
     one(s, x + 0.28, y + 0.68, 2.7, 0.55, b, 10, MUTE, False, BODY)
 place_box(s, 7.65, 2.3, 4.95, 3.55, "art_backend.jpg", "HERO — backend", "the engine", AZURE)
 one(s, 7.65, 6.0, 4.95, 0.75, "Stateless, async Python — the core analysis engine powers cleaning, modeling, explainability and the chart gallery.", 11, MUTE, False, BODY)
-footer(s, 13)
+footer(s)
 
 # ============================ 14 — Data flow ============================
 s = slide(INK2)
@@ -498,7 +529,7 @@ for i, (h, b, c) in enumerate(flow):
     one(s, x + 0.3, y + 0.25, 3.0, 0.4, h, 14, c, True, HEAD)
     one(s, x + 0.3, y + 0.72, 3.05, 0.85, b, 11, MUTE, False, BODY)
 one(s, 1.0, 6.75, 11.3, 0.4, "Every stage streams real-time status to the frontend via SSE — minutes, not days, from upload to insight.", 12, MUTE, False, BODY, CENTER)
-footer(s, 14)
+footer(s)
 
 # ============================ 15 — LLM providers ============================
 s = slide(INK)
@@ -519,7 +550,7 @@ for i, (p, m, cost, cc) in enumerate(prov):
     one(s, 3.55, y, 3.0, 0.32, m, 11, MUTE, False, MONO)
     one(s, 6.55, y, 1.2, 0.32, cost, 11, cc, cost == "FREE", MONO)
 one(s, 1.0, 5.85, 7.0, 0.9, "A unified layer routes each task to the right model — capability matched to complexity. Priority: UI settings → per-role env → global env → MockLLM fallback (runs with no keys at all).", 11, MUTE, False, BODY)
-footer(s, 15)
+footer(s)
 
 # ============================ 16 — Prompt engineering ============================
 s = slide(INK2)
@@ -547,7 +578,7 @@ for i, (h, b) in enumerate(pts):
     box(s, 6.85, y, 5.48, 0.72, PANEL, EDGE)
     one(s, 7.08, y + 0.08, 5.1, 0.35, h, 12.5, GOLD, True, HEAD)
     one(s, 7.08, y + 0.4, 5.1, 0.3, b, 10, MUTE, False, BODY)
-footer(s, 16)
+footer(s)
 
 # ============================ 17 — Nine task types ============================
 s = slide(INK)
@@ -568,7 +599,7 @@ for i, (h, b, c) in enumerate(tasks):
     one(s, x + 0.66, y + 0.2, 2.8, 0.45, h, 14, WHITE, True, HEAD)
     one(s, x + 0.3, y + 0.68, 3.1, 0.45, b, 10.5, MUTE, False, MONO)
 one(s, 1.0, 6.7, 11.3, 0.4, "Plus statistics, model-evaluation diagnostics, SMOTE, feature engineering, a what-if simulator and natural-language Q&A.", 11.5, MUTE, False, BODY, CENTER)
-footer(s, 17)
+footer(s)
 
 # ============================ 18 — Statistics + evaluation ============================
 s = slide(INK)
@@ -587,7 +618,7 @@ for i, e in enumerate(ev):
     y = 3.08 + i * 0.53
     dot(s, 7.08, y + 0.08, 0.13, MAGENTA)
     one(s, 7.34, y, 4.9, 0.45, e, 12.5, MIST, False, BODY)
-footer(s, 18)
+footer(s)
 
 # ============================ 19 — Security ============================
 s = slide(INK)
@@ -604,7 +635,7 @@ for i, (h, b, c) in enumerate(sec):
     box(s, 1.0, y, 0.12, 1.05, c, None, radius=0.0)
     one(s, 1.35, y + 0.13, 6.5, 0.4, h, 14, c, True, HEAD)
     one(s, 1.35, y + 0.52, 6.5, 0.45, b, 11, MUTE, False, BODY)
-footer(s, 19)
+footer(s)
 
 # ============================ 20 — Resilience + SSE ============================
 s = slide(INK2)
@@ -620,7 +651,7 @@ for i, (a, b, c) in enumerate(levels):
     one(s, x + 0.25, y + 0.16, 3.1, 0.35, f"LEVEL {i + 1}", 10, MUTE, True, MONO)
     text(s, x + 0.25, y + 0.52, 3.1, 0.5, [[(a + "  ", 13, MIST, True, BODY), ("→ " + b, 12, c, False, MONO)]])
 one(s, 1.0, 6.6, 11.3, 0.4, "Real-time SSE: an asyncio.Queue bus + anti-buffering headers push every agent event to the UI with sub-second latency.", 12, MUTE, False, BODY, CENTER)
-footer(s, 20)
+footer(s)
 
 # ============================ 21 — Deployment + comparison ============================
 s = slide(INK)
@@ -648,7 +679,7 @@ for i, (cap, other) in enumerate(caps):
     one(s, 7.0, y, 3.2, 0.35, cap, 11.5, MIST, False, BODY, anchor=MID)
     one(s, 10.25, y, 1.1, 0.35, "✓", 13, ACID, True, BODY, CENTER, MID)
     one(s, 11.4, y, 1.1, 0.35, other, 11, CORAL if other == "✕" else GOLD, False, BODY, CENTER, MID)
-footer(s, 21)
+footer(s)
 
 # ============================ 22 — Conclusion ============================
 s = slide(INK)
@@ -666,7 +697,7 @@ for i, (h, b, c) in enumerate(pillars):
     text(s, 1.3, y, 6.7, 0.5, [[(h + "  ", 12.5, WHITE, True, HEAD), (b, 11.5, MUTE, False, BODY)]])
 text(s, 1.0, 6.15, 7.0, 0.5, [[("Days  →  Minutes.", 22, CYAN, True, HEAD)]])
 one(s, 1.0, 6.8, 7.2, 0.35, "helix-henna.vercel.app   ·   github.com/Srujan29112001/helix   ·   IIIT-H · June 2026", 10.5, MUTE, False, MONO)
-footer(s, 22)
+footer(s)
 
 # ----------------------------- save -----------------------------
 out_path = os.path.join(HERE, "Helix_Project_Deck.pptx")
