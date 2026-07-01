@@ -481,10 +481,15 @@ def _eval_detail(model, X_train, y_train, X_test, y_test, preds, proba, is_clf, 
                 clone(model), Xc, yc, cv=3, scoring=scoring, n_jobs=1,
                 train_sizes=np.linspace(0.2, 1.0, 5), error_score="raise",
             )
-            out["_learning"] = [
-                {"n": int(sizes[i]), "train": round(float(tr[i].mean()), 3), "val": round(float(va[i].mean()), 3)}
-                for i in range(len(sizes))
-            ]
+            # keep only finite points — a metric like ROC-AUC can be NaN on a tiny
+            # single-class fold, and a NaN would break JSON / the chart downstream
+            pts = []
+            for i in range(len(sizes)):
+                t, v = float(tr[i].mean()), float(va[i].mean())
+                if math.isfinite(t) and math.isfinite(v):
+                    pts.append({"n": int(sizes[i]), "train": round(t, 3), "val": round(v, 3)})
+            if len(pts) >= 2:
+                out["_learning"] = pts
         except Exception:  # noqa: BLE001
             pass
     except Exception:  # noqa: BLE001

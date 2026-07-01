@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
 import shutil
 import tempfile
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, UploadFile
@@ -58,8 +60,27 @@ async def datasets() -> list[dict]:
     return dataset_summaries()
 
 
+def _json_safe(o):
+    """Make a payload STRICTLY valid JSON before it goes over SSE:
+    - NaN / Infinity → null (Python's json emits the literal tokens NaN/Infinity,
+      which the browser's JSON.parse REJECTS — silently dropping the whole message,
+      so results never render). This was the "run didn't finish" bug.
+    - numpy scalars/arrays → native Python types (json can't serialize them)."""
+    if isinstance(o, float):  # also catches numpy.float64 (a float subclass)
+        return o if math.isfinite(o) else None
+    if isinstance(o, dict):
+        return {k: _json_safe(v) for k, v in o.items()}
+    if isinstance(o, (list, tuple)):
+        return [_json_safe(v) for v in o]
+    if isinstance(o, np.generic):
+        return _json_safe(o.item())
+    if isinstance(o, np.ndarray):
+        return [_json_safe(v) for v in o.tolist()]
+    return o
+
+
 def _sse(obj: dict) -> str:
-    return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n"
+    return f"data: {json.dumps(_json_safe(obj), ensure_ascii=False)}\n\n"
 
 
 def _count_data_rows(path: str) -> int:
