@@ -250,25 +250,30 @@ one(s, 1.02, 6.85, 7.0, 0.4, "helix-henna.vercel.app    ·    github.com/Srujan2
 s = slide(INK)
 eyebrow(s, 1.0, 0.85, "Capstone team", VIOLET)
 title(s, 1.0, 1.2, "The team behind Helix")
-one(s, 1.0, 2.02, 11.3, 0.4, "A six-member capstone group · IIIT-Hyderabad · 2026", 13.5, MUTE, False, BODY)
-# 6 members (kept in order) — initials avatar + name
+one(s, 1.0, 2.02, 11.3, 0.4, "A seven-member capstone group · IIIT-Hyderabad · 2026", 13.5, MUTE, False, BODY)
+# 7 members (kept in order) — initials avatar + name, laid out 4 + 3 (centered)
 MEMBERS = [
     ("Srujan K", "SK", CYAN), ("Satish B", "SB", VIOLET), ("Renuka Jataprolu", "RJ", ACID),
     ("Saumya Ratan", "SR", GOLD), ("Priyanka Laha", "PL", MAGENTA), ("Santosh Vaddadi", "SV", AZURE),
+    ("Sameer Kohli", "SK", CORAL),
 ]
-for i, (name, ini, c) in enumerate(MEMBERS):
-    col, row = i % 3, i // 3
-    x = 1.0 + col * 3.85
-    y = 2.7 + row * 1.45
-    box(s, x, y, 3.55, 1.25, PANEL, EDGE)
-    dot(s, x + 0.32, y + 0.35, 0.55, c)
-    one(s, x + 0.32, y + 0.35, 0.55, 0.55, ini, 14, INK, True, HEAD, CENTER, MID)
-    one(s, x + 1.05, y + 0.3, 2.4, 0.65, name, 15, WHITE, True, HEAD, anchor=MID)
+MW, MH = 2.85, 1.2
+for ri, group in enumerate((MEMBERS[:4], MEMBERS[4:])):
+    n = len(group)
+    span = n * MW + (n - 1) * 0.18
+    x0 = (SW - span) / 2
+    y = 2.66 + ri * 1.4
+    for ci, (name, ini, c) in enumerate(group):
+        x = x0 + ci * (MW + 0.18)
+        box(s, x, y, MW, MH, PANEL, EDGE)
+        dot(s, x + 0.26, y + 0.35, 0.5, c)
+        one(s, x + 0.26, y + 0.35, 0.5, 0.5, ini, 12, INK, True, HEAD, CENTER, MID)
+        one(s, x + 0.88, y + 0.26, MW - 1.05, 0.68, name, 13, WHITE, True, HEAD, anchor=MID)
 # presenting to — set apart with a gold-bordered band
-box(s, 1.0, 5.72, 11.33, 1.1, INK2, GOLD, 1.25)
-one(s, 1.0, 5.9, 11.33, 0.3, "PRESENTING TO", 10.5, MUTE, True, MONO, CENTER)
-one(s, 1.0, 6.18, 11.33, 0.4, "Prof. Ponnurangam Kumaraguru (PK)", 19, WHITE, True, HEAD, CENTER)
-one(s, 1.0, 6.6, 11.33, 0.3, "Professor, Computer Science · IIIT-Hyderabad", 12, MIST, False, BODY, CENTER)
+box(s, 1.0, 5.58, 11.33, 1.12, INK2, GOLD, 1.25)
+one(s, 1.0, 5.76, 11.33, 0.3, "PRESENTING TO", 10.5, MUTE, True, MONO, CENTER)
+one(s, 1.0, 6.03, 11.33, 0.4, "Prof. Ponnurangam Kumaraguru (PK)", 19, WHITE, True, HEAD, CENTER)
+one(s, 1.0, 6.44, 11.33, 0.3, "Professor, Computer Science · IIIT-Hyderabad", 12, MIST, False, BODY, CENTER)
 footer(s)
 
 # ============================ 3 — Overview ============================
